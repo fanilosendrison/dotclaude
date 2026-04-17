@@ -19,9 +19,11 @@ readonly VENDOR_REPO="fanilosendrison/cc-skills"
 readonly VENDOR_BRANCH="dev"
 
 readonly TARGET_CLAUDE=".claude"
+readonly TARGET_AGENTS=".claude/agents"
 readonly ROUTINE_SETUP=".claude/routine-setup.sh"
 readonly NIGHTLY_RUNNER=".claude/nightly-clean-run.sh"
 readonly GITIGNORE=".gitignore"
+readonly SRC_AGENTS="${HOME}/.claude/agents"
 
 # Vendor working copy (for sync-vendor). One per user, shared across repos.
 readonly VENDOR_WORK="${HOME}/.cache/cc-skills-vendor"
@@ -80,8 +82,40 @@ $marker
 .claude/*
 !$ROUTINE_SETUP
 !$NIGHTLY_RUNNER
+!$TARGET_AGENTS/
+!$TARGET_AGENTS/**
 EOF
 	_ok "appended nightly-clean block to $GITIGNORE"
+}
+
+# Copy ~/.claude/agents/*.md into .claude/agents/ of the target repo, with
+# path patching (~/.claude/skills/ → .claude/skills/). Agents must be in the
+# initial clone because the cloud Routine registry is frozen before the
+# setup script runs — agents added to disk post-clone are never registered.
+# Uses rsync --delete so removals propagate; idempotent.
+_copy_and_patch_agents() {
+	[[ -d "$SRC_AGENTS" ]] || _err "$SRC_AGENTS not found (no agents to copy)"
+
+	mkdir -p "$TARGET_AGENTS"
+	rsync -a --delete \
+		--exclude='.DS_Store' \
+		"$SRC_AGENTS/" "$TARGET_AGENTS/"
+
+	# Patch ~/.claude/ refs in .md agent files (macOS vs GNU sed).
+	local sed_inplace=(-i '')
+	sed --version >/dev/null 2>&1 && sed_inplace=(-i)
+	find "$TARGET_AGENTS" -type f -name '*.md' -exec sed "${sed_inplace[@]}" \
+		-e 's|~/\.claude/skills/|.claude/skills/|g' \
+		-e 's|~/\.claude/scripts/|.claude/scripts/|g' \
+		-e 's|~/\.claude/agents/|.claude/agents/|g' \
+		-e 's|$HOME/\.claude/skills/|.claude/skills/|g' \
+		-e 's|$HOME/\.claude/scripts/|.claude/scripts/|g' \
+		-e 's|$HOME/\.claude/agents/|.claude/agents/|g' \
+		{} +
+
+	local count
+	count=$(find "$TARGET_AGENTS" -type f -name '*.md' | wc -l | tr -d ' ')
+	_ok "copied + patched $count agent(s) to $TARGET_AGENTS/"
 }
 
 # routine-setup.sh runs at the start of every nightly Routine. It installs
@@ -94,7 +128,8 @@ _write_routine_setup() {
 # routine-setup.sh — Runs at the start of every nightly-clean Routine.
 # 1. Hard-fail without GH_TOKEN (required for gh CLI + cc-skills clone).
 # 2. Install missing CLIs: gh, jq, node.
-# 3. Clone fanilosendrison/cc-skills into .claude/ (skills, agents, scripts).
+# 3. Clone fanilosendrison/cc-skills into .claude/ (skills + scripts only;
+#    agents are committed in the target repo — see _copy_and_patch_agents).
 # 4. Patch ~/.claude/... refs to .claude/... in all .md files.
 set -euo pipefail
 
@@ -130,17 +165,20 @@ done
 
 # Clone cc-skills vendor repo fresh each run. Path into .claude/ directly so
 # references like .claude/skills/loop-clean/loop-clean.sh resolve naturally.
-rm -rf .claude/.vendor .claude/skills .claude/agents .claude/scripts
+# NOTE: .claude/agents/ is NOT touched here — agents are committed directly
+# in the repo because the cloud Routine registry is frozen BEFORE this
+# setup script runs. Agents added to disk post-clone are never registered.
+rm -rf .claude/.vendor .claude/skills .claude/scripts
 git clone --depth 1 --branch "$VENDOR_BRANCH" \\
 	"https://x-access-token:\${GH_TOKEN}@github.com/$VENDOR_REPO.git" \\
 	.claude/.vendor 2>&1 | tail -3
 
 mv .claude/.vendor/skills .claude/skills
-mv .claude/.vendor/agents .claude/agents
 mv .claude/.vendor/scripts .claude/scripts
 rm -rf .claude/.vendor
 
 # Patch ~/.claude/ refs to .claude/ project-local (cloud has no home dir).
+# Agents are already patched at enroll-time, but re-patching is idempotent.
 find .claude/skills .claude/agents -type f -name '*.md' -exec sed -i \\
 	-e 's|~/\\.claude/skills/|.claude/skills/|g' \\
 	-e 's|~/\\.claude/scripts/|.claude/scripts/|g' \\
@@ -438,6 +476,8 @@ cmd_init() {
 	echo "==> Writing helpers"
 	_write_routine_setup
 	_write_nightly_runner
+	echo "==> Copying agents from ~/.claude/agents/"
+	_copy_and_patch_agents
 	echo "==> Updating $GITIGNORE"
 	_ensure_gitignore
 	echo ""
@@ -506,6 +546,16 @@ cmd_sync_vendor() {
 	)
 }
 
+# Re-sync agents into .claude/agents/ of the current repo, with path
+# patching. Use after updating ~/.claude/agents/ to propagate changes.
+cmd_refresh_agents() {
+	_require_git_repo
+	echo "==> Refreshing agents from ~/.claude/agents/"
+	_copy_and_patch_agents
+	echo ""
+	echo "Next: commit + push updated $TARGET_AGENTS/"
+}
+
 cmd_status() {
 	echo "Repo: $(basename "$PWD")"
 	echo ""
@@ -545,10 +595,11 @@ cmd_uninstall() {
 usage() {
 	cat >&2 <<EOF
 Usage:
-  enroll.sh init          # Write helpers + update .gitignore (first time for a repo)
-  enroll.sh sync-vendor   # Push ~/.claude/{skills,agents,scripts}/ to $VENDOR_REPO
-  enroll.sh status        # Show enrollment state
-  enroll.sh uninstall     # Remove helpers (keep .gitignore, delete cloud Routine manually)
+  enroll.sh init             # Write helpers + copy agents + update .gitignore
+  enroll.sh refresh-agents   # Re-copy ~/.claude/agents/ into .claude/agents/
+  enroll.sh sync-vendor      # Push ~/.claude/{skills,agents,scripts}/ to $VENDOR_REPO
+  enroll.sh status           # Show enrollment state
+  enroll.sh uninstall        # Remove helpers (keep .gitignore, delete cloud Routine manually)
 EOF
 	exit 2
 }
@@ -557,6 +608,7 @@ main() {
 	[[ $# -lt 1 ]] && usage
 	case "$1" in
 		init) cmd_init ;;
+		refresh-agents) cmd_refresh_agents ;;
 		sync-vendor) cmd_sync_vendor ;;
 		status) cmd_status ;;
 		uninstall) cmd_uninstall ;;

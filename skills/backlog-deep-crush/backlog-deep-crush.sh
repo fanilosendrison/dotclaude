@@ -285,6 +285,90 @@ cmd_annotate_blocked() {
 	echo "backlog-deep-crush: annotated $annotated item(s) as blocked in $BACKLOG_FILE" >&2
 }
 
+# One-shot migration helper: move all legacy `(blocked: ..., skipped Nx)`
+# items from backlog.md to design-queue.md as [escalated] entries. Use on
+# repos that pre-date the escalate-stuck command — their backlog contains
+# items frozen by the old annotate-blocked flow, invisible to any crush
+# until the marker is removed manually. migrate-blocked unfreezes them
+# all by surfacing them as design-queue escalations with origin metadata.
+#
+# Idempotent via destruction: migrated items disappear from backlog.md,
+# so a second invocation is a no-op. Skip counts are NOT touched (the
+# items are already out-of-flight).
+cmd_migrate_blocked() {
+	_require_jq
+	[[ -f "$BACKLOG_FILE" ]] || return 0
+	local design_file="design-queue.md"
+
+	if [[ ! -f "$design_file" ]]; then
+		cat > "$design_file" <<'EOF'
+# Design queue
+
+Items qui necessitent un arbitrage humain avant d'etre traduits en fix atomique. Ces items ne sont **pas** traites par `/backlog-crush` ou `/backlog-deep-crush`. Voir `~/.claude/skills/fix-or-backlog/SKILL.md` pour la convention de format et la logique d'escalade auto.
+
+EOF
+	fi
+
+	local today
+	today=$(date -u +%Y-%m-%d)
+	local lines_to_remove
+	lines_to_remove=$(mktemp)
+	local migrated=0
+	local n=0
+
+	while IFS= read -r line; do
+		n=$((n + 1))
+		if [[ "$line" =~ ^-[[:space:]]+\[[[:space:]]\][[:space:]]+\[([^]]+)\][[:space:]].*\(blocked:[[:space:]]*([0-9]{4}-[0-9]{2}-[0-9]{2}),[[:space:]]*skipped[[:space:]]+([0-9]+)x\) ]]; then
+			local severity first_blocked_date skipped_count
+			severity=$(printf '%s\n' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')
+			first_blocked_date="${BASH_REMATCH[2]}"
+			skipped_count="${BASH_REMATCH[3]}"
+
+			local stripped
+			stripped=$(printf '%s\n' "$line" | sed -E \
+				-e 's/^-[[:space:]]+\[[[:space:]]\][[:space:]]+\[[^]]+\][[:space:]]*//' \
+				-e 's/[[:space:]]*\(blocked:[[:space:]]*[0-9-]+,[[:space:]]*skipped[[:space:]]+[0-9]+x\)[[:space:]]*$//')
+
+			local input="backlog|${n}|${line:0:80}"
+			local id
+			id=$(printf '%s' "$input" | _sha256 | cut -c1-16)
+
+			{
+				printf '%s\n' "- [ ] [escalated] $stripped"
+				echo "  - origin_severity: $severity"
+				echo "  - origin_id: $id"
+				echo "  - skipped_count: $skipped_count"
+				echo "  - first_blocked_on: $first_blocked_date"
+				echo "  - escalated_on: $today"
+				echo "  - why: legacy-blocked item migrated to design-queue via \`migrate-blocked\`. Was invisible to crush since $first_blocked_date."
+				echo "  - cta: decide — retry (move back to backlog.md without marker), drop (resolve via code + check off), or redefine scope (rewrite + move back)."
+				echo ""
+			} >> "$design_file"
+
+			echo "$n" >> "$lines_to_remove"
+			migrated=$((migrated + 1))
+		fi
+	done < "$BACKLOG_FILE"
+
+	if [[ "$migrated" -gt 0 ]]; then
+		local drop_list
+		drop_list=$(sort -u "$lines_to_remove" | tr '\n' ',' | sed 's/,$//')
+		local tmp_bk
+		tmp_bk=$(mktemp)
+		awk -v lines="$drop_list" '
+			BEGIN {
+				n = split(lines, arr, ",")
+				for (i = 1; i <= n; i++) if (arr[i] != "") drop[arr[i]+0] = 1
+			}
+			!(NR in drop) { print }
+		' "$BACKLOG_FILE" > "$tmp_bk"
+		mv "$tmp_bk" "$BACKLOG_FILE"
+	fi
+
+	rm -f "$lines_to_remove"
+	echo "backlog-deep-crush: migrated $migrated legacy-blocked item(s) to $design_file" >&2
+}
+
 # Escalate items with skip_count >= SKIP_THRESHOLD to design-queue.md.
 # Physically moves each stuck item out of backlog.md and appends an
 # "[escalated]" entry in design-queue.md with origin metadata. Called
@@ -571,6 +655,7 @@ Usage:
   backlog-deep-crush.sh record-skip "<id1> <id2> ..."  # bump skip-count for items not fixed this cycle
   backlog-deep-crush.sh annotate-blocked               # legacy: add "(blocked: ...)" marker in place
   backlog-deep-crush.sh escalate-stuck                 # move items with skip_count >= threshold to design-queue.md (preferred at EXIT_STABLE)
+  backlog-deep-crush.sh migrate-blocked                # one-shot: migrate legacy "(blocked: ...)" items from backlog.md to design-queue.md
   backlog-deep-crush.sh decide <N>
   backlog-deep-crush.sh finalize
   backlog-deep-crush.sh cleanup
@@ -589,6 +674,7 @@ main() {
 		record-skip) cmd_record_skip "${1:-}" ;;
 		annotate-blocked) cmd_annotate_blocked ;;
 		escalate-stuck) cmd_escalate_stuck ;;
+		migrate-blocked) cmd_migrate_blocked ;;
 		decide)
 			if [[ $# -lt 1 ]]; then usage; fi
 			cmd_decide "$1"
