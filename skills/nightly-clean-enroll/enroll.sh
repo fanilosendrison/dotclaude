@@ -469,7 +469,8 @@ cmd_sync_vendor() {
 
 	# Unified exclude list. data/ catches any runtime state dir (e.g.
 	# statusline/data/, command-validator/data/); .cache/ catches bun/npm
-	# caches; .claude/ catches nested local-state dirs in script monorepos.
+	# caches. `.claude/settings.local.json` is machine-specific but we keep
+	# `.claude/commands/` (project-level slash commands worth versioning).
 	local -a sync_excludes=(
 		--exclude='.DS_Store'
 		--exclude='.index-state.json'
@@ -481,7 +482,7 @@ cmd_sync_vendor() {
 		--exclude='package-lock.json'
 		--exclude='data/'
 		--exclude='.cache/'
-		--exclude='.claude/'
+		--exclude='settings.local.json'
 	)
 
 	echo "==> Syncing ~/.claude/ → $VENDOR_WORK"
