@@ -1,0 +1,812 @@
+#!/usr/bin/env bash
+# loop-clean.sh — Deterministic orchestrator for the post-implementation
+# workflow: senior-review → dedup-codebase → spec-drift → fix-or-backlog,
+# iterated until CLEAN / OSCILLATION / CEILING.
+#
+# This script is pure bash: it parses JSON produced by the skills, decides
+# which iteration to run next, and never performs semantic work. All
+# semantic decisions (what is a finding, what to fix) remain in the skills.
+#
+# Usage (driven by loop-clean/SKILL.md, not invoked by the user directly):
+#
+#   bash loop-clean.sh init
+#   bash loop-clean.sh prepare-iter <N>
+#   bash loop-clean.sh decide <N>
+#   bash loop-clean.sh finalize
+#
+# All runtime state lives under .claude/run/loop-clean/<PID>/ in the
+# project repo. That directory must be gitignored.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Constants & portability
+# ---------------------------------------------------------------------------
+
+readonly MAX_ITERATIONS=10
+readonly RUN_DIR_BASE=".claude/run/loop-clean"
+readonly RETENTION_DAYS=7
+
+# The PID of the parent shell invoking us. We use PPID rather than $$ so
+# that all subcommands of a single /loop-clean session land in the same
+# RUN_DIR — the script forks a new process each subcommand, so $$ would
+# change. If PPID is unavailable (shouldn't happen on bash >= 3), fall
+# back to $$.
+readonly SESSION_ID="${LOOP_CLEAN_SESSION_ID:-${PPID:-$$}}"
+readonly RUN_DIR="${RUN_DIR_BASE}/${SESSION_ID}"
+
+# Portable sha256 wrapper: Linux ships sha256sum, macOS ships shasum -a 256.
+_sha256() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum | awk '{print $1}'
+	else
+		shasum -a 256 | awk '{print $1}'
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# Precondition checks
+# ---------------------------------------------------------------------------
+
+_require_jq() {
+	if ! command -v jq >/dev/null 2>&1; then
+		cat >&2 <<'EOF'
+ERROR: loop-clean requires jq (JSON parser).
+  macOS:   download from https://stedolan.github.io/jq/download/
+  Linux:   apt-get install jq  /  dnf install jq
+EOF
+		exit 2
+	fi
+}
+
+# Delete RUN_DIR entries older than RETENTION_DAYS. Uses find -depth -delete
+# so we never need rm -rf (per user's CLAUDE.md). Silent on missing base dir.
+# mtime is evaluated on the RUN_DIR itself — acceptable because each RUN_DIR
+# is immutable after `finalize` (nothing writes to it anymore), so its mtime
+# stably reflects when the loop-clean session ran.
+_cleanup_old_runs() {
+	local root="$RUN_DIR_BASE"
+	[[ -d "$root" ]] || return 0
+	local deleted=0
+	while IFS= read -r -d '' dir; do
+		# Safety: never touch the RUN_DIR of the current session.
+		if [[ "$dir" == "$RUN_DIR" ]]; then
+			continue
+		fi
+		if find "$dir" -depth -delete 2>/dev/null; then
+			deleted=$((deleted + 1))
+		fi
+	done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -mtime "+${RETENTION_DAYS}" -print0 2>/dev/null)
+	if [[ "$deleted" -gt 0 ]]; then
+		echo "loop-clean: purged $deleted run(s) older than ${RETENTION_DAYS} days." >&2
+	fi
+}
+
+_check_gitignore() {
+	# Non-destructive: warn if .claude/run/ is not in .gitignore, but do not
+	# modify the file. The user's CLAUDE.md says the script must not write
+	# to repo files it does not own.
+	local gi=".gitignore"
+	if [[ -f "$gi" ]]; then
+		if ! grep -qE '(^|/)\.claude/run($|/)' "$gi"; then
+			cat >&2 <<'EOF'
+WARNING: .claude/run/ is not in .gitignore.
+Add the following line to .gitignore before committing:
+    .claude/run/
+EOF
+		fi
+	else
+		cat >&2 <<'EOF'
+WARNING: no .gitignore found at repo root.
+Create one and include the line:
+    .claude/run/
+EOF
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# Iteration directory helper
+# ---------------------------------------------------------------------------
+
+_iter_dir() {
+	local n="$1"
+	printf '%s/iter-%03d' "$RUN_DIR" "$n"
+}
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+# Capture baseline: test/lint/typecheck exit codes at loop start. Written to
+# $RUN_DIR/baseline.json. Used by finalize to detect regressions introduced by
+# the loop (vs pre-existing failures). Opt-out via LOOP_CLEAN_SKIP_BASELINE=1.
+_capture_baseline() {
+	if [[ "${LOOP_CLEAN_SKIP_BASELINE:-0}" == "1" ]]; then
+		jq -n '{skipped: true, reason: "LOOP_CLEAN_SKIP_BASELINE=1"}' > "$RUN_DIR/baseline.json"
+		return 0
+	fi
+	local out="$RUN_DIR/baseline.json"
+	local test_cmd="" lint_cmd="" type_cmd=""
+	local test_exit="null" lint_exit="null" type_exit="null"
+
+	test_cmd=$(_resolve_test_command || echo "")
+	if [[ -n "$test_cmd" ]]; then
+		bash -c "$test_cmd" >/dev/null 2>&1 && test_exit=0 || test_exit=$?
+	fi
+
+	# Lint / typecheck from STACK_EVAL.yaml if present. Silent skip if absent.
+	local se_path=""
+	local dir
+	dir="$(pwd)"
+	while [[ "$dir" != "/" ]]; do
+		[[ -f "$dir/STACK_EVAL.yaml" ]] && se_path="$dir/STACK_EVAL.yaml" && break
+		dir=$(dirname "$dir")
+	done
+	if [[ -n "$se_path" ]]; then
+		lint_cmd=$(grep -E '^[[:space:]]*lint_command:' "$se_path" 2>/dev/null \
+			| head -n 1 | sed 's/.*lint_command:[[:space:]]*//' | sed 's/^"//; s/"$//' || true)
+		type_cmd=$(grep -E '^[[:space:]]*typecheck_command:' "$se_path" 2>/dev/null \
+			| head -n 1 | sed 's/.*typecheck_command:[[:space:]]*//' | sed 's/^"//; s/"$//' || true)
+		[[ -n "$lint_cmd" ]] && { bash -c "$lint_cmd" >/dev/null 2>&1 && lint_exit=0 || lint_exit=$?; }
+		[[ -n "$type_cmd" ]] && { bash -c "$type_cmd" >/dev/null 2>&1 && type_exit=0 || type_exit=$?; }
+	fi
+
+	jq -n \
+		--arg test_cmd "$test_cmd" --argjson test_exit "$test_exit" \
+		--arg lint_cmd "$lint_cmd" --argjson lint_exit "$lint_exit" \
+		--arg type_cmd "$type_cmd" --argjson type_exit "$type_exit" \
+		'{test: {cmd: $test_cmd, exit: $test_exit},
+		  lint: {cmd: $lint_cmd, exit: $lint_exit},
+		  typecheck: {cmd: $type_cmd, exit: $type_exit}}' > "$out"
+}
+
+cmd_init() {
+	_require_jq
+	mkdir -p "$RUN_DIR"
+
+	_cleanup_old_runs
+
+	local base_sha
+	if base_sha=$(git rev-parse HEAD 2>/dev/null); then
+		echo "$base_sha" > "$RUN_DIR/base-sha"
+	else
+		echo "" > "$RUN_DIR/base-sha"
+		echo "NOTE: not a git repo (or no HEAD); BASE_SHA is empty." >&2
+	fi
+
+	if [[ -f backlog.md ]]; then
+		cp backlog.md "$RUN_DIR/backlog-baseline.md"
+	fi
+
+	_capture_baseline
+
+	_check_gitignore
+
+	# Emit env-var exports for the caller to source.
+	cat <<EOF
+LOOP_CLEAN_RUN_DIR="$RUN_DIR"
+LOOP_CLEAN_BASE_SHA="$(cat "$RUN_DIR/base-sha")"
+LOOP_CLEAN_SESSION_ID="$SESSION_ID"
+EOF
+}
+
+cmd_prepare_iter() {
+	_require_jq
+	local n="$1"
+	local dir
+	dir="$(_iter_dir "$n")"
+	mkdir -p "$dir"
+
+	# Emit the env-var exports the caller should apply for each sub-step.
+	# Callers pick the one matching the skill they're about to invoke.
+	cat <<EOF
+LOOP_CLEAN_ITERATION="$n"
+LOOP_CLEAN_RUN_DIR="$RUN_DIR"
+LOOP_CLEAN_BASE_SHA="$(cat "$RUN_DIR/base-sha" 2>/dev/null || echo "")"
+# Per-step JSON output targets:
+LOOP_CLEAN_JSON_OUT_SENIOR_REVIEW="$dir/senior-review.json"
+LOOP_CLEAN_JSON_OUT_DEDUP_CODEBASE="$dir/dedup-codebase.json"
+LOOP_CLEAN_JSON_OUT_SPEC_DRIFT="$dir/spec-drift.json"
+LOOP_CLEAN_JSON_OUT_FIX_OR_BACKLOG="$dir/fix-or-backlog.json"
+LOOP_CLEAN_JSON_OUT_RUNTIME_GATE="$dir/runtime-gate.json"
+EOF
+}
+
+# Extract all finding ids from one skill JSON (senior-review or
+# dedup-codebase). Missing file → no output (treated as zero findings).
+_ids_from_findings() {
+	local f="$1"
+	if [[ -f "$f" ]]; then
+		jq -r '.findings[]?.id // empty' "$f"
+	fi
+}
+
+# Extract drift ids from the spec-drift JSON.
+_ids_from_drift() {
+	local f="$1"
+	if [[ -f "$f" ]]; then
+		jq -r '.drift[]?.id // empty' "$f"
+	fi
+}
+
+# Normalize text for stable oscillation signatures: lowercase, collapse
+# whitespace, strip leading/trailing whitespace. Applied at hash-computation
+# time (not at id-write time) so LLM reformulations between iterations
+# ("ignores CRLF" vs "does not handle CRLF") produce the same signature.
+_normalize_text() {
+	tr '[:upper:]' '[:lower:]' \
+		| tr -s '[:space:]' ' ' \
+		| sed -E 's/^[[:space:]]+|[[:space:]]+$//g'
+}
+
+# Emit one normalized signature per finding, sourced from the JSON content
+# rather than the stored id. Signature = sha256(axis|file|normalize(problem)).
+# Used ONLY for oscillation detection; the original id is preserved in JSON.
+_sigs_from_findings() {
+	local f="$1"
+	[[ -f "$f" ]] || return 0
+	jq -r '.findings[]? | [.axis // "", .file // "", .problem // ""] | @tsv' "$f" \
+		| while IFS=$'\t' read -r axis file problem; do
+			local norm
+			norm=$(printf '%s' "$problem" | _normalize_text)
+			printf '%s|%s|%s' "$axis" "$file" "$norm" | _sha256
+		done
+}
+
+# Same for spec-drift JSON. Signature = sha256(drift|spec_file|src_file|normalize(name)).
+_sigs_from_drift() {
+	local f="$1"
+	[[ -f "$f" ]] || return 0
+	jq -r '.drift[]? | [.spec_file // "", .src_file // "", .name // ""] | @tsv' "$f" \
+		| while IFS=$'\t' read -r spec src name; do
+			local norm
+			norm=$(printf '%s' "$name" | _normalize_text)
+			printf 'drift|%s|%s|%s' "$spec" "$src" "$norm" | _sha256
+		done
+}
+
+_count_findings() {
+	local f="$1"
+	if [[ -f "$f" ]]; then
+		jq -r '.findings // [] | length' "$f"
+	else
+		echo 0
+	fi
+}
+
+_count_drift() {
+	local f="$1"
+	if [[ -f "$f" ]]; then
+		jq -r '.drift // [] | length' "$f"
+	else
+		echo 0
+	fi
+}
+
+# Resolve the project's test command from STACK_EVAL.yaml (walk up from cwd)
+# or fall back to conventions. Emits the command string on stdout, or empty
+# if nothing found. Respects $LOOP_CLEAN_SKIP_TESTS=1 as an explicit opt-out.
+_resolve_test_command() {
+	if [[ "${LOOP_CLEAN_SKIP_TESTS:-}" == "1" ]]; then
+		echo ""
+		return 0
+	fi
+	local se_path=""
+	local dir
+	dir="$(pwd)"
+	while [[ "$dir" != "/" ]]; do
+		if [[ -f "$dir/STACK_EVAL.yaml" ]]; then
+			se_path="$dir/STACK_EVAL.yaml"
+			break
+		fi
+		dir=$(dirname "$dir")
+	done
+	if [[ -n "$se_path" ]]; then
+		# Priority 1: explicit test_command override.
+		local cmd
+		cmd=$(grep -E '^[[:space:]]*test_command:' "$se_path" 2>/dev/null | head -n 1 | sed 's/.*test_command:[[:space:]]*//' | sed 's/^"//; s/"$//')
+		if [[ -n "$cmd" ]]; then
+			echo "$cmd"
+			return 0
+		fi
+		# Priority 2: derive from declared package_manager (package.json projects).
+		if [[ -f package.json ]] && grep -q '"test"' package.json 2>/dev/null; then
+			local pm
+			pm=$(grep -E '^[[:space:]]*package_manager:' "$se_path" 2>/dev/null | head -n 1 | sed 's/.*package_manager:[[:space:]]*//' | sed 's/^"//; s/"$//' | tr -d '[:space:]')
+			case "$pm" in
+				bun|pnpm|yarn|npm) echo "$pm test"; return 0 ;;
+			esac
+		fi
+	fi
+	# Priority 3: detect the package manager from the lockfile.
+	if [[ -f package.json ]] && grep -q '"test"' package.json 2>/dev/null; then
+		if [[ -f bun.lockb ]] || [[ -f bun.lock ]]; then echo "bun test"; return 0; fi
+		if [[ -f pnpm-lock.yaml ]]; then echo "pnpm test"; return 0; fi
+		if [[ -f yarn.lock ]]; then echo "yarn test"; return 0; fi
+		if [[ -f package-lock.json ]]; then echo "npm test"; return 0; fi
+		# Priority 4: no lockfile — use bun if installed, else npm.
+		if command -v bun >/dev/null 2>&1; then echo "bun test"; return 0; fi
+		echo "npm test"
+		return 0
+	fi
+	if [[ -f pyproject.toml ]] || [[ -f pytest.ini ]] || [[ -f setup.cfg ]]; then
+		echo "pytest -q"
+		return 0
+	fi
+	if [[ -f Cargo.toml ]]; then
+		echo "cargo test --quiet"
+		return 0
+	fi
+	echo ""
+}
+
+# Runtime test gate: runs the project's test suite after fix-or-backlog and
+# injects a synthetic critical finding into runtime-gate.json if it fails.
+# Stdout: "PASS" | "FAIL" | "SKIP".
+cmd_test_gate() {
+	_require_jq
+	local n="$1"
+	local dir
+	dir="$(_iter_dir "$n")"
+	mkdir -p "$dir"
+	local out="$dir/runtime-gate.json"
+
+	local cmd
+	cmd=$(_resolve_test_command)
+	if [[ -z "$cmd" ]]; then
+		jq -n '{skill: "runtime-gate", status: "skipped", reason: "no test command resolved", findings: []}' > "$out"
+		echo "SKIP"
+		return 0
+	fi
+
+	local log
+	log=$(mktemp)
+	local exit_code=0
+	bash -c "$cmd" > "$log" 2>&1 || exit_code=$?
+
+	if [[ "$exit_code" -eq 0 ]]; then
+		jq -n --arg cmd "$cmd" \
+			'{skill: "runtime-gate", status: "pass", command: $cmd, findings: []}' > "$out"
+		rm -f "$log"
+		echo "PASS"
+		return 0
+	fi
+
+	# Failure — emit one synthetic critical finding. Problem text is stable
+	# (doesn't embed iteration number) so the oscillation hash matches across
+	# iterations as long as the failure persists.
+	local tail_output
+	tail_output=$(tail -n 50 "$log" | jq -Rs .)
+	local problem="test suite failed after fix-or-backlog"
+	local norm
+	norm=$(printf '%s' "$problem" | _normalize_text)
+	local fid
+	fid=$(printf 'runtime-gate||runtime-failure|%s' "$norm" | _sha256 | cut -c1-16)
+
+	jq -n \
+		--arg cmd "$cmd" \
+		--argjson exit "$exit_code" \
+		--argjson output "$tail_output" \
+		--arg id "$fid" \
+		--arg problem "$problem" \
+		'{
+			skill: "runtime-gate",
+			status: "fail",
+			command: $cmd,
+			exit_code: $exit,
+			findings: [{
+				id: $id,
+				source: "runtime-gate",
+				axis: "runtime-failure",
+				severity: "critical",
+				file: "",
+				line_start: null,
+				line_end: null,
+				problem: $problem,
+				evidence: $output,
+				fix_proposal: "Read the test output, identify the failing test, fix the root cause."
+			}]
+		}' > "$out"
+	rm -f "$log"
+	echo "FAIL"
+}
+
+# Commit changes produced by iteration N. Opt-in via LOOP_CLEAN_COMMIT_PER_ITER=1.
+# No-op (exit 0) if opt-out, not a git repo, or nothing to commit.
+# Stdout: COMMITTED <sha> | SKIPPED_OPT_OUT | SKIPPED_NO_CHANGES | SKIPPED_NO_GIT.
+cmd_commit_iter() {
+	local n="$1"
+	if [[ "${LOOP_CLEAN_COMMIT_PER_ITER:-0}" != "1" ]]; then
+		echo "SKIPPED_OPT_OUT"
+		return 0
+	fi
+	if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		echo "SKIPPED_NO_GIT"
+		return 0
+	fi
+	local dir
+	dir="$(_iter_dir "$n")"
+	local fb="$dir/fix-or-backlog.json"
+	[[ -f "$fb" ]] || { echo "SKIPPED_NO_CHANGES"; return 0; }
+
+	# Stage files touched by fix-or-backlog + backlog.md. Avoid -A (per CLAUDE.md).
+	local files
+	files=$(jq -r '[.fix_now_applied[]?.file, .fix_now_applied[]?.files_touched[]?] | unique | .[]' "$fb" 2>/dev/null)
+	[[ -f backlog.md ]] && git add backlog.md 2>/dev/null || true
+	while IFS= read -r f; do
+		[[ -n "$f" && -e "$f" ]] && git add "$f" 2>/dev/null || true
+	done <<< "$files"
+
+	if git diff --cached --quiet; then
+		echo "SKIPPED_NO_CHANGES"
+		return 0
+	fi
+
+	# Build enriched commit message: title + metadata + Applied + Escalated + Notes.
+	local applied_count escalated_count backlog_count
+	applied_count=$(jq -r '.fix_now_applied // [] | length' "$fb")
+	escalated_count=$(jq -r '.escalated // [] | length' "$fb")
+	backlog_count=$(jq -r '.backlog_added // [] | length' "$fb")
+
+	local title="chore(loop-clean): iter $n — $applied_count applied, $escalated_count escalated, $backlog_count backlog"
+
+	local applied_block="" escalated_block="" notes_block=""
+	if [[ "$applied_count" -gt 0 ]]; then
+		applied_block=$'\n\nApplied:\n'
+		applied_block+=$(jq -r '.fix_now_applied // [] | sort_by(.finding_id)[] | "  - [\(.finding_id)] \(.file): \(.change_summary // "(no summary)")"' "$fb")
+	fi
+	if [[ "$escalated_count" -gt 0 ]]; then
+		escalated_block=$'\n\nEscalated:\n'
+		escalated_block+=$(jq -r '.escalated // [] | sort_by(.finding_id)[] | "  - [\(.finding_id)] \(.reason)"' "$fb")
+	fi
+
+	local notes_raw
+	notes_raw=$(jq -r '.notes // [] | .[]' "$fb" 2>/dev/null | LC_ALL=C sort -u)
+	if [[ -n "$notes_raw" ]]; then
+		notes_block=$'\n\nNotes:\n'
+		while IFS= read -r note; do
+			[[ -n "$note" ]] && notes_block+="  - $note"$'\n'
+		done <<< "$notes_raw"
+		notes_block="${notes_block%$'\n'}"
+	fi
+
+	local metadata="Session: $SESSION_ID | RUN_DIR: $RUN_DIR | iter-$(printf '%03d' "$n")"
+	local body="${metadata}${applied_block}${escalated_block}${notes_block}"
+
+	local author_name="${GIT_AUTHOR_NAME:-Claude Loop-Clean}"
+	local author_email="${GIT_AUTHOR_EMAIL:-${CLAUDE_COMMITTER_EMAIL:-claude-loop-clean@anthropic.com}}"
+
+	git -c "user.name=$author_name" -c "user.email=$author_email" \
+		commit -m "$title" -m "$body" >/dev/null
+
+	local sha
+	sha=$(git rev-parse HEAD)
+	echo "COMMITTED $sha"
+}
+
+cmd_decide() {
+	_require_jq
+	local n="$1"
+	local dir
+	dir="$(_iter_dir "$n")"
+
+	local sr="$dir/senior-review.json"
+	local dc="$dir/dedup-codebase.json"
+	local sd="$dir/spec-drift.json"
+	local rg="$dir/runtime-gate.json"
+
+	# --- Total findings across the four sources for this iteration.
+	# runtime-gate contributes 0 or 1 finding (synthetic critical on test fail).
+	local sr_count dc_count sd_count rg_count total
+	sr_count=$(_count_findings "$sr")
+	dc_count=$(_count_findings "$dc")
+	sd_count=$(_count_drift "$sd")
+	rg_count=$(_count_findings "$rg")
+	total=$((sr_count + dc_count + sd_count + rg_count))
+
+	# --- Oscillation hash: sorted concatenation of normalized signatures.
+	# Uses _sigs_from_findings instead of _ids_from_findings to immunize
+	# against LLM reformulations of `problem` between iterations — the
+	# same logical finding now produces the same signature even if the
+	# stored id changed due to text variance.
+	local hash
+	hash=$(
+		{
+			_sigs_from_findings "$sr"
+			_sigs_from_findings "$dc"
+			_sigs_from_drift "$sd"
+			_sigs_from_findings "$rg"
+		} | LC_ALL=C sort -u | _sha256
+	)
+
+	local action="CONTINUE"
+	local reason=""
+	local next_step="run /fix-or-backlog"
+
+	# --- EXIT_CLEAN: zero findings AND (N==0 OR previous iter did nothing).
+	if [[ "$total" -eq 0 ]]; then
+		if [[ "$n" -eq 0 ]]; then
+			action="EXIT_CLEAN"
+			reason="zero findings at iter 0"
+			next_step="stop"
+		else
+			local prev_fb
+			prev_fb="$(_iter_dir $((n - 1)))/fix-or-backlog.json"
+			if [[ -f "$prev_fb" ]]; then
+				local prev_fixes prev_backlog
+				prev_fixes=$(jq -r '.fix_now_applied // [] | length' "$prev_fb")
+				prev_backlog=$(jq -r '.backlog_added // [] | length' "$prev_fb")
+				if [[ "$prev_fixes" -eq 0 && "$prev_backlog" -eq 0 ]]; then
+					action="EXIT_CLEAN"
+					reason="zero findings and previous iter applied no fixes / backlog"
+					next_step="stop"
+				else
+					# Previous iter did work that resolved all findings — one more
+					# verification pass already ran (this one) and found nothing.
+					# That is the terminal CLEAN state.
+					action="EXIT_CLEAN"
+					reason="zero findings after previous iter applied fixes"
+					next_step="stop"
+				fi
+			else
+				# Previous fix-or-backlog JSON missing — assume CLEAN to avoid loop.
+				action="EXIT_CLEAN"
+				reason="zero findings; previous iter fix-or-backlog JSON absent"
+				next_step="stop"
+			fi
+		fi
+	fi
+
+	# --- EXIT_OSCILLATION: same hash as previous iter.
+	if [[ "$action" == "CONTINUE" && "$n" -gt 0 ]]; then
+		local prev_decision
+		prev_decision="$(_iter_dir $((n - 1)))/decision.json"
+		if [[ -f "$prev_decision" ]]; then
+			local prev_hash
+			prev_hash=$(jq -r '.findings_hash // ""' "$prev_decision")
+			if [[ -n "$prev_hash" && "$prev_hash" == "$hash" ]]; then
+				action="EXIT_OSCILLATION"
+				reason="findings_hash identical to iter $((n - 1)) — findings are not being resolved"
+				next_step="stop"
+			fi
+		fi
+	fi
+
+	# --- EXIT_CEILING: iteration budget exhausted.
+	if [[ "$action" == "CONTINUE" && "$n" -ge $((MAX_ITERATIONS - 1)) ]]; then
+		action="EXIT_CEILING"
+		reason="reached MAX_ITERATIONS=$MAX_ITERATIONS"
+		next_step="stop"
+	fi
+
+	# --- Write decision.json.
+	jq -n \
+		--argjson iteration "$n" \
+		--arg action "$action" \
+		--arg findings_hash "$hash" \
+		--arg reason "$reason" \
+		--argjson findings_count "$total" \
+		--arg next_step "$next_step" \
+		'{
+			iteration: $iteration,
+			action: $action,
+			findings_hash: $findings_hash,
+			reason: $reason,
+			findings_count: $findings_count,
+			next_step: $next_step
+		}' > "$dir/decision.json"
+
+	# --- stdout: single word action, for easy branching by caller.
+	echo "$action"
+}
+
+cmd_cleanup() {
+	_cleanup_old_runs
+	# Also report current state (what remains).
+	if [[ -d "$RUN_DIR_BASE" ]]; then
+		local remaining
+		remaining=$(find "$RUN_DIR_BASE" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+		echo "loop-clean: $remaining run(s) remaining under $RUN_DIR_BASE/"
+	else
+		echo "loop-clean: no $RUN_DIR_BASE/ directory present."
+	fi
+}
+
+# Archive checked backlog items older than N days to backlog.archive.md.
+# Silent no-op if backlog.md is absent or no item is eligible. Atomic
+# via tmp file + mv. Threshold: LOOP_CLEAN_BACKLOG_ARCHIVE_DAYS (default 30).
+cmd_sweep_backlog() {
+	local src="backlog.md"
+	local dst="backlog.archive.md"
+	local days="${LOOP_CLEAN_BACKLOG_ARCHIVE_DAYS:-30}"
+
+	[[ -f "$src" ]] || return 0
+
+	local cutoff_ts
+	if date -u -d "${days} days ago" +%s >/dev/null 2>&1; then
+		cutoff_ts=$(date -u -d "${days} days ago" +%s)
+	else
+		cutoff_ts=$(date -u -v "-${days}d" +%s 2>/dev/null || echo 0)
+	fi
+	[[ "$cutoff_ts" -eq 0 ]] && return 0
+
+	local tmp_live tmp_arch
+	tmp_live=$(mktemp)
+	tmp_arch=$(mktemp)
+	local archived=0 kept=0
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if [[ "$line" =~ ^-\ \[x\]\ .*date:\ ([0-9]{4}-[0-9]{2}-[0-9]{2}) ]]; then
+			local item_date="${BASH_REMATCH[1]}"
+			local item_ts
+			item_ts=$(date -u -d "$item_date" +%s 2>/dev/null \
+				|| date -u -j -f "%Y-%m-%d" "$item_date" +%s 2>/dev/null \
+				|| echo 0)
+			if [[ "$item_ts" -gt 0 && "$item_ts" -lt "$cutoff_ts" ]]; then
+				echo "$line" >> "$tmp_arch"
+				archived=$((archived + 1))
+				continue
+			fi
+		fi
+		echo "$line" >> "$tmp_live"
+		kept=$((kept + 1))
+	done < "$src"
+
+	if [[ "$archived" -eq 0 ]]; then
+		rm -f "$tmp_live" "$tmp_arch"
+		return 0
+	fi
+
+	if [[ ! -f "$dst" ]]; then
+		echo "# Backlog archive" > "$dst"
+		echo "" >> "$dst"
+		echo "Items migrated from backlog.md after ${days}-day retention." >> "$dst"
+		echo "" >> "$dst"
+	fi
+	echo "" >> "$dst"
+	echo "## Sweep $(date -u +%Y-%m-%d) — $archived items" >> "$dst"
+	cat "$tmp_arch" >> "$dst"
+
+	mv "$tmp_live" "$src"
+	rm -f "$tmp_arch"
+
+	echo "loop-clean: archived $archived backlog item(s) to $dst (kept $kept lines in $src)" >&2
+}
+
+cmd_finalize() {
+	_require_jq
+	local total_iters=0
+	local total_fixes=0
+	local total_backlog=0
+	local last_action="UNKNOWN"
+
+	for i in $(seq 0 $((MAX_ITERATIONS - 1))); do
+		local dir
+		dir="$(_iter_dir "$i")"
+		if [[ ! -d "$dir" ]]; then
+			break
+		fi
+		total_iters=$((total_iters + 1))
+
+		local fb="$dir/fix-or-backlog.json"
+		if [[ -f "$fb" ]]; then
+			local fx bg
+			fx=$(jq -r '.fix_now_applied // [] | length' "$fb")
+			bg=$(jq -r '.backlog_added // [] | length' "$fb")
+			total_fixes=$((total_fixes + fx))
+			total_backlog=$((total_backlog + bg))
+		fi
+
+		local dec="$dir/decision.json"
+		if [[ -f "$dec" ]]; then
+			last_action=$(jq -r '.action // "UNKNOWN"' "$dec")
+		fi
+	done
+
+	# Post-loop regression check vs baseline.
+	local regression_note=""
+	local final_exit=0
+	local baseline_file="$RUN_DIR/baseline.json"
+	if [[ -f "$baseline_file" ]] \
+			&& [[ "$(jq -r '.skipped // false' "$baseline_file")" != "true" ]]; then
+		local base_test base_lint base_type
+		local test_cmd lint_cmd type_cmd
+		base_test=$(jq -r '.test.exit // "null"' "$baseline_file")
+		base_lint=$(jq -r '.lint.exit // "null"' "$baseline_file")
+		base_type=$(jq -r '.typecheck.exit // "null"' "$baseline_file")
+		test_cmd=$(jq -r '.test.cmd // ""' "$baseline_file")
+		lint_cmd=$(jq -r '.lint.cmd // ""' "$baseline_file")
+		type_cmd=$(jq -r '.typecheck.cmd // ""' "$baseline_file")
+
+		local post_test="null" post_lint="null" post_type="null"
+		[[ -n "$test_cmd" ]] && { bash -c "$test_cmd" >/dev/null 2>&1 && post_test=0 || post_test=$?; }
+		[[ -n "$lint_cmd" ]] && { bash -c "$lint_cmd" >/dev/null 2>&1 && post_lint=0 || post_lint=$?; }
+		[[ -n "$type_cmd" ]] && { bash -c "$type_cmd" >/dev/null 2>&1 && post_type=0 || post_type=$?; }
+
+		local regressed=()
+		[[ "$base_test" == "0" && "$post_test" != "0" && "$post_test" != "null" ]] && regressed+=("test")
+		[[ "$base_lint" == "0" && "$post_lint" != "0" && "$post_lint" != "null" ]] && regressed+=("lint")
+		[[ "$base_type" == "0" && "$post_type" != "0" && "$post_type" != "null" ]] && regressed+=("typecheck")
+
+		if [[ ${#regressed[@]} -gt 0 ]]; then
+			regression_note=$'\n\n⚠️  REGRESSION DETECTED: '"${regressed[*]}"' went from pass to fail during this loop.'
+			final_exit=3
+		fi
+	fi
+
+	cat <<EOF
+# loop-clean report
+
+- Session: $SESSION_ID
+- RUN_DIR: $RUN_DIR
+- Iterations executed: $total_iters
+- Final action: $last_action
+- Total fixes applied: $total_fixes
+- Total backlog items added: $total_backlog$regression_note
+
+Per-iteration decisions: $RUN_DIR/iter-*/decision.json
+Baseline: $RUN_DIR/baseline.json
+EOF
+	return "$final_exit"
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+usage() {
+	cat >&2 <<EOF
+Usage:
+  loop-clean.sh init
+  loop-clean.sh prepare-iter <N>
+  loop-clean.sh test-gate <N>      # run project tests, emit runtime-gate.json
+  loop-clean.sh commit-iter <N>    # commit iter N changes (opt-in via LOOP_CLEAN_COMMIT_PER_ITER=1)
+  loop-clean.sh decide <N>
+  loop-clean.sh finalize
+  loop-clean.sh cleanup            # delete run dirs older than ${RETENTION_DAYS} days
+  loop-clean.sh sweep-backlog      # archive [x] items older than \${LOOP_CLEAN_BACKLOG_ARCHIVE_DAYS:-30} days
+EOF
+	exit 2
+}
+
+main() {
+	if [[ $# -lt 1 ]]; then usage; fi
+	local cmd="$1"
+	shift
+
+	case "$cmd" in
+		init)
+			cmd_init "$@"
+			;;
+		prepare-iter)
+			if [[ $# -lt 1 ]]; then usage; fi
+			cmd_prepare_iter "$1"
+			;;
+		test-gate)
+			if [[ $# -lt 1 ]]; then usage; fi
+			cmd_test_gate "$1"
+			;;
+		commit-iter)
+			if [[ $# -lt 1 ]]; then usage; fi
+			cmd_commit_iter "$1"
+			;;
+		decide)
+			if [[ $# -lt 1 ]]; then usage; fi
+			cmd_decide "$1"
+			;;
+		finalize)
+			cmd_finalize
+			;;
+		cleanup)
+			cmd_cleanup
+			;;
+		sweep-backlog)
+			cmd_sweep_backlog
+			;;
+		*)
+			usage
+			;;
+	esac
+}
+
+main "$@"

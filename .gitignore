@@ -1,0 +1,17 @@
+# Runtime state — must never be versioned
+scripts/statusline/data/
+scripts/*/data/last_*
+
+# Dependencies + build artefacts
+node_modules/
+__pycache__/
+*.pyc
+bun.lockb
+package-lock.json
+.index-state.json
+
+# Logs
+*.log
+
+# OS
+.DS_Store
