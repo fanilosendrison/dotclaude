@@ -165,7 +165,12 @@ dans le diff, c'est du code frais. Sinon, c'est pre-existant.
    l'appel `Agent(...)` — laisser le frontmatter de l'agent decider.
    L'orchestrateur du skill reste sur le model de la session parent ; seuls
    les sub-agents sont pinnes sur Opus 4.6 / effort xhigh.
-6. **Ajouter les items BACKLOG** dans `/backlog.md` a la racine du repo.
+6. **Router les items BACKLOG selon leur severite** (routage normatif, pas optionnel) :
+
+   - Si `severity` ∈ {`critical`, `major`, `notable`, `minor`, `nit`} → appender dans `backlog.md` avec le format standard (cf. section **Backlog file**). Dedup par `file:line — desc[0:40]` ou par `drift_id:` pour les findings spec-drift.
+   - Si `severity` == `design` → appender dans `design-queue.md` avec le format natif design (cf. section **Design-queue file**). Dedup par `design_id:`. **Ne JAMAIS** ecrire un item `design` dans `backlog.md`.
+
+   Le JSON d'emission (cf. section **Emission JSON**) doit refleter le split via deux champs distincts : `backlog_added[]` (severites auto-fixables) et `design_queue_added[]` (severite `design`).
 7. Si un finding est reellement ambigu entre fix et backlog, escalader
    uniquement celui-la.
 8. **Consolider les retours des sub-agents `fix-file`** : aggreger les
@@ -198,6 +203,22 @@ BACKLOG:
 
 Chaque ligne justifie la decision par reference a la matrice ou a une regle
 override.
+
+## Deux files distinctes : `backlog.md` et `design-queue.md`
+
+Le skill maintient deux files a la racine du repo avec des roles orthogonaux :
+
+- **`backlog.md`** — items auto-fixables. Tout item ici est suppose etre traitable par `backlog-fix` (re-discovery + fix atomique + verification observable). Severites : `critical`, `major`, `notable`, `minor`, `nit`.
+- **`design-queue.md`** — items qui exigent un arbitrage humain. Ces items ne sont jamais traites par `backlog-fix`. Severite : `design`. Alimentee aussi par l'escalade automatique des items `backlog.md` qui ont ete skippes 2x (cf. `backlog-crush.sh escalate-stuck`).
+
+### Routage par severite
+
+Dans la phase 6 de la procedure (ajout BACKLOG) :
+
+- Si `severity` ∈ {`critical`, `major`, `notable`, `minor`, `nit`} → ajouter a `backlog.md` avec le format standard ou le format `spec-drift[...]`.
+- Si `severity` == `design` → ajouter a `design-queue.md` (voir format ci-dessous).
+
+Un item avec `severity: design` n'entre **jamais** dans le flux auto-fix — il attend une decision humaine.
 
 ## Backlog file
 
@@ -293,6 +314,51 @@ fi
 Le skill applique ces regles pour chaque item a ajouter — pas de doublons
 entre sessions, mais les regressions restent visibles.
 
+## Design-queue file
+
+Le fichier est a `design-queue.md` a la racine du repo.
+
+- Si le fichier n'existe pas, le creer avec un header et une section explicative.
+- Header minimum :
+
+```markdown
+# Design queue
+
+Items qui necessitent un arbitrage humain avant d'etre traduits en fix atomique. Ces items ne sont **pas** traites par `/backlog-crush` ou `/backlog-deep-crush`.
+
+Deux origines :
+
+1. **Findings natifs design** : severite `design` emise par senior-review quand l'auteur ne peut pas formuler d'`observable_change` credible (trade-off ergonomie/strictness, choix semver, clarification NIB, scope cross-cutting).
+2. **Escalades auto depuis backlog** : items de `backlog.md` atteints par `skipped 2x` et migres automatiquement par `backlog-crush.sh escalate-stuck` ou `backlog-deep-crush.sh escalate-stuck` au moment d'`EXIT_STABLE`.
+
+Quand un item est resolu (decision prise + implementation si applicable), le cocher `[x]` comme dans `backlog.md`. La dedup cross-session fonctionne par `design_id` (natif) ou `origin_id` (escalade).
+```
+
+### Format d'item (finding natif `design`)
+
+```markdown
+- [ ] [design] <file>:<line> — <problem> (date: YYYY-MM-DD, source: /senior-review iter-N, design_id: <16 hex>)
+  - **FIX propose** : <fix_proposal>
+  - **Pourquoi design** : <ce qui empeche la formulation d'observable_change — trade-off, choix semver, spec ambigue, scope>
+  - **Decision requise** : <question precise a trancher>
+```
+
+### Format d'item (escalade depuis backlog)
+
+```markdown
+- [ ] [escalated] <file>:<line> — <problem_original> (date_first_seen: YYYY-MM-DD, date_escalated: YYYY-MM-DD, origin_severity: <critical|major|notable|minor|nit>, origin_id: <id ou "n/a">, skipped_count: N)
+  - **Fix original propose** : <fix_proposal_original>
+  - **Raison du skip recurrent** : <reason du dernier skip de backlog-fix>
+  - **Decision requise** : <question deduite — souvent "valider scope" ou "accepter breaking change" ou "arbitrer spec vs code">
+```
+
+### Dedup design-queue
+
+- Items natifs : dedup sur `design_id:` (stable si le finding revient avec meme (source, axis, file, problem)).
+- Escalades : dedup sur `origin_id:` si present, sinon sur `file:line — problem_original[0:40]`.
+
+Ne jamais supprimer un `[x]` pour regression — ajouter une nouvelle ligne comme pour `backlog.md`.
+
 ## Anti-patterns
 
 - Ne PAS tout backlog parce que "0 critical, 0 major". Les notables sur du
@@ -330,6 +396,13 @@ rapport humain standard.
       "severity": "critical" | "major" | "notable" | "minor" | "nit"
     }
   ],
+  "design_queue_added": [
+    {
+      "finding_id": "string",
+      "file": "string",
+      "reason_why_design": "string (pourquoi observable_change n'a pas pu etre formule)"
+    }
+  ],
   "escalated": [
     {
       "finding_id": "string",
@@ -342,7 +415,8 @@ rapport humain standard.
 
 - `fix_now_applied` : findings classes FIX NOW qui ont ete appliques dans ce
   pass. Un finding est ici SSI le fichier a ete modifie.
-- `backlog_added` : findings classes BACKLOG qui ont ete ajoutes a `backlog.md`.
+- `backlog_added` : findings `critical|major|notable|minor|nit` ajoutes a `backlog.md`. **Ne contient JAMAIS** de severite `design`.
+- `design_queue_added` : findings `severity == "design"` ajoutes a `design-queue.md`. File humaine — aucun traitement auto en aval.
 - `escalated` : findings reellement ambigus, remontes au mainteneur. Liste
   vide si aucun.
 - `notes` : observations consolidees des sub-agents `fix-file` / `backlog-fix`
@@ -358,7 +432,7 @@ name + "|" + spec_file + "|" + src_file).slice(0,16)`).
 
 ### Interaction avec la boucle loop-clean
 
-- Si `fix_now_applied` et `backlog_added` sont tous deux vides a l'iteration N,
+- Si `fix_now_applied`, `backlog_added` et `design_queue_added` sont tous vides a l'iteration N,
   et que total_findings a l'iteration N+1 vaut 0, `loop-clean.sh decide N+1`
   declenche `EXIT_CLEAN`.
 - Si les memes finding_ids reviennent a l'iteration suivante (hash identique),

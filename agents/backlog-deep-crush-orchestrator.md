@@ -140,17 +140,19 @@ Stdout :
 - `EXIT_CEILING` → 80 cycles.
 - `EXIT_STABLE` → 3 cycles sans réduction.
 
-### Étape 2.5 — Annoter les items bloqués (seulement si `EXIT_STABLE`)
+### Étape 2.5 — Escalader les items bloqués vers design-queue.md (seulement si `EXIT_STABLE`)
 
 Si `decide` retourne `EXIT_STABLE`, invoquer avant `finalize` :
 
 ```bash
-bash ~/.claude/skills/backlog-deep-crush/backlog-deep-crush.sh annotate-blocked
+bash ~/.claude/skills/backlog-deep-crush/backlog-deep-crush.sh escalate-stuck
 ```
 
-Cela ajoute un suffixe ` (blocked: YYYY-MM-DD, skipped Nx)` aux items dont le skip-count atteint le seuil. Persistance cross-session : le prochain run ignore ces items jusqu'à ce que l'utilisateur retire manuellement le marqueur. Sans cette étape, le prochain run nocturne retoucherait aux mêmes blocages et déclencherait `EXIT_STABLE` immédiatement — boucle stérile en tête de file.
+Cela **déplace** physiquement chaque item dont `skip_count >= SKIP_THRESHOLD` de `backlog.md` vers `design-queue.md` avec les métadonnées d'origine. Les items escalate-stuck quittent la boucle nocturne et apparaissent en tête de la file humaine le matin suivant. Sans cette étape, les items stuck mangent les cycles futurs pour rien.
 
 **Ne PAS invoquer** sur `EXIT_DONE` ou `EXIT_CEILING`.
+
+**Legacy** : `annotate-blocked` reste disponible (marqueur in-place) mais est dépréciée. Préférer `escalate-stuck`.
 
 ### Étape 3 — Finalize
 

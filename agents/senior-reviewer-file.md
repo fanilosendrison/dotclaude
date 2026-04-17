@@ -116,6 +116,15 @@ Avant d'assigner une sévérité, applique ce test :
 - **notable** : problème structurel réel mais non déclenché aujourd'hui. Ne bloque PAS. Backlog prioritaire.
 - **minor** : problème à faible impact — nommage, magic number, perf sur chemin froid. Ne bloque pas.
 - **nit** : cosmétique. Ne bloque jamais.
+- **design** : préoccupation réelle **sans `observable_change` formulable** — exige un arbitrage humain (trade-off ergonomie/strictness, choix semver, clarification NIB, scope cross-cutting). Route vers `design-queue.md` au lieu de `backlog.md`. Ne bloque PAS.
+
+## Règle du `observable_change`
+
+Chaque finding DOIT avoir un champ `OBSERVABLE_CHANGE` qui décrit :
+- soit une assertion de test qui passe de FAIL à PASS après le fix (`expect(x.y).toBe(z)` avec avant/après),
+- soit un comportement run-time mesurable avant/après (`duration passe de 500ms à 50ms`, `event X apparait dans le log`, `fichier output contient Y au lieu de Z`).
+
+≤ 2 lignes. **Si tu ne peux pas remplir ce champ de manière crédible** (ex : "il faudrait arbitrer entre X et Y", "spec à clarifier", "dépend d'une décision semver"), **la sévérité est `design`**, pas `critical`/`major`/`notable`/`minor`/`nit`. C'est la règle qui distingue "fixable atomiquement" de "exige arbitrage".
 
 ## Format de sortie
 
@@ -128,10 +137,11 @@ FINDINGS:
      PROBLEME: [description précise — format canonique {sujet} {verbe} {objet}, phrase affirmative, sans modalité, stable entre invocations]
      EVIDENCE: [extrait de code ou raisonnement qui démontre]
      FIX: [correction concrète]
+     OBSERVABLE_CHANGE: [assertion FAIL→PASS ou comportement run-time mesurable. Chaîne vide UNIQUEMENT si SEVERITE=design.]
 
   2. ...
 
-RESUME: N critical, N major, N notable, N minor, N nit
+RESUME: N critical, N major, N notable, N minor, N nit, N design
 BLOQUANT: oui/non — oui si ≥1 critical ou major
 ```
 

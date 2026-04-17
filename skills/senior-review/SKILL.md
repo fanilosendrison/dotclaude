@@ -206,17 +206,18 @@ Ne jamais classer en `major` un probleme qui necessite un scenario construit ou 
 ```
 VERDICT: ISSUES FOUND
 FINDINGS:
-  1. [AXE] [SEVERITE: critical | major | notable | minor | nit]
+  1. [AXE] [SEVERITE: critical | major | notable | minor | nit | design]
      FICHIER: [path:ligne]
      PROBLEME: [description precise]
      EVIDENCE: [extrait de code ou raisonnement qui demontre le probleme]
      FIX: [correction proposee, concrete]
+     OBSERVABLE_CHANGE: [l'assertion de test qui passe FAIL->PASS apres le fix, OU le comportement run-time observable avant/apres — ≤ 2 lignes. Si tu ne peux pas formuler cet element credible, severite = design.]
 
   2. [AXE] [SEVERITE]
      ...
 
-RESUME: [N] critical, [N] major, [N] notable, [N] minor, [N] nit
-BLOQUANT: [oui/non — oui si au moins 1 critical ou major. notable ne bloque PAS.]
+RESUME: [N] critical, [N] major, [N] notable, [N] minor, [N] nit, [N] design
+BLOQUANT: [oui/non — oui si au moins 1 critical ou major. notable/design ne bloquent PAS.]
 ```
 
 ### Si aucun finding :
@@ -234,6 +235,9 @@ CONFIANCE: [high | medium — medium si le diff est large ou touche beaucoup de 
 - **notable** : probleme structurel reel mais non declenche aujourd'hui — edge case protege par un invariant upstream, guard manquant sur un path theorique, test tautologique sur un chemin important, spec deviation sans impact output, gap de couverture sur une trust boundary. Ne bloque PAS le merge. Backlog prioritaire.
 - **minor** : probleme reel mais a faible impact — nommage trompeur, magic number, performance sous-optimale sur un chemin froid, documentation manquante. Ne bloque pas.
 - **nit** : cosmetique, preference stylistique. Ne bloque jamais.
+- **design** : preoccupation reelle mais **sans observable_change formulable** — probleme qui exige un arbitrage humain avant d'etre traduit en fix atomique (trade-off ergonomie/strictness, choix semver, clarification de spec, scope cross-cutting). Route directement vers `design-queue.md` (pas vers `backlog.md`) via fix-or-backlog. Ne bloque PAS le merge mais escalate pour decision.
+
+**Regle du `design`** : si tu ne peux pas remplir `OBSERVABLE_CHANGE` avec une assertion concrete (test FAIL->PASS) ou un comportement run-time measurable, la severite est `design`, quel que soit l'axe. Sans observable_change, un sub-agent `backlog-fix` ne peut pas prouver que son fix fonctionne, et skippera defensivement — autant acheminer l'item directement vers la file humaine.
 
 ---
 
@@ -279,18 +283,19 @@ ne rien ecrire (invocation standalone, comportement inchange).
       "id": "string (16 hex chars)",
       "source": "senior-review",
       "axis": "string",
-      "severity": "critical" | "major" | "notable" | "minor" | "nit",
+      "severity": "critical" | "major" | "notable" | "minor" | "nit" | "design",
       "file": "string (chemin relatif repo)",
       "line_start": number | null,
       "line_end": number | null,
       "problem": "string",
       "evidence": "string",
-      "fix_proposal": "string"
+      "fix_proposal": "string",
+      "observable_change": "string (assertion FAIL->PASS ou comportement run-time, ≤ 2 lignes ; chaine vide UNIQUEMENT si severity=design)"
     }
   ],
   "summary": {
     "critical": number, "major": number, "notable": number,
-    "minor": number, "nit": number
+    "minor": number, "nit": number, "design": number
   },
   "blocking": boolean
 }

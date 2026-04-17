@@ -132,17 +132,19 @@ Stdout :
 - `EXIT_CEILING` → 40 cycles atteints. Sortir.
 - `EXIT_STABLE` → 3 cycles consécutifs sans réduction du compte. Sortir.
 
-### Étape 2.5 — Annoter les items bloqués (seulement si `EXIT_STABLE`)
+### Étape 2.5 — Escalader les items bloqués vers design-queue.md (seulement si `EXIT_STABLE`)
 
 Si le `decide` a retourné `EXIT_STABLE`, invoquer avant `finalize` :
 
 ```bash
-bash ~/.claude/skills/backlog-crush/backlog-crush.sh annotate-blocked
+bash ~/.claude/skills/backlog-crush/backlog-crush.sh escalate-stuck
 ```
 
-Cela ajoute un suffixe ` (blocked: YYYY-MM-DD, skipped Nx)` aux items dont le skip-count atteint le seuil. Persistance cross-session : `next-item` de la prochaine invocation du skill ignorera ces items jusqu'à ce que l'utilisateur retire le marqueur manuellement (signal "j'ai débloqué"). Sans cette étape, le prochain run ré-essaierait les mêmes items bloqués et re-déclencherait `EXIT_STABLE` immédiatement.
+Cela **déplace** physiquement chaque item dont `skip_count >= SKIP_THRESHOLD` de `backlog.md` vers `design-queue.md`, avec les métadonnées d'origine (`origin_severity`, `origin_id`, `skipped_count`, `escalated_on`, `why`, `cta`). Les items escalate-stuck quittent la boucle auto-fix et attendent un arbitrage humain — ils ne seront plus offerts par `next-item` au prochain run.
 
-**Ne PAS invoquer** `annotate-blocked` sur `EXIT_DONE` ou `EXIT_CEILING` — seulement `EXIT_STABLE`, car c'est le seul exit signalant une stagnation persistante.
+**Ne PAS invoquer** `escalate-stuck` sur `EXIT_DONE` ou `EXIT_CEILING` — seulement `EXIT_STABLE`, car c'est le seul exit signalant une stagnation persistante.
+
+**Legacy** : la commande `annotate-blocked` (marqueur `(blocked:` en place, sans déplacement) reste disponible pour compat. Elle est dépréciée au profit d'`escalate-stuck` qui surface proprement les items dans une file humaine.
 
 ### Étape 3 — Finalize
 

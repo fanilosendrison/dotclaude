@@ -241,6 +241,106 @@ cmd_annotate_blocked() {
 	echo "backlog-crush: annotated $annotated item(s) as blocked in $BACKLOG_FILE" >&2
 }
 
+# Escalate items with skip_count >= SKIP_THRESHOLD to design-queue.md.
+# Physically moves each stuck item out of backlog.md and appends an
+# "[escalated]" entry in design-queue.md with origin metadata. Called
+# by the orchestrator at EXIT_STABLE INSTEAD of annotate-blocked — the
+# two are alternatives: annotate marks items as blocked in place,
+# escalate moves them to a separate human-facing queue.
+#
+# Idempotent: items already absent from backlog.md (previously escalated)
+# are no-ops. Skip counts for escalated ids are cleared from the sidecar.
+cmd_escalate_stuck() {
+	_require_jq
+	_ensure_skip_counts
+	[[ -f "$BACKLOG_FILE" ]] || return 0
+	local skip_file
+	skip_file="$(_skip_counts_file)"
+	local design_file="design-queue.md"
+
+	local stuck_data
+	stuck_data=$(jq -r --argjson thr "$SKIP_THRESHOLD" \
+		'to_entries[] | select(.value >= $thr) | "\(.key)\t\(.value)"' "$skip_file")
+	[[ -z "$stuck_data" ]] && return 0
+
+	local tmp_map
+	tmp_map=$(mktemp)
+	_scan_backlog > "$tmp_map"
+
+	if [[ ! -f "$design_file" ]]; then
+		cat > "$design_file" <<'EOF'
+# Design queue
+
+Items qui necessitent un arbitrage humain avant d'etre traduits en fix atomique. Ces items ne sont **pas** traites par `/backlog-crush` ou `/backlog-deep-crush`. Voir `~/.claude/skills/fix-or-backlog/SKILL.md` pour la convention de format et la logique d'escalade auto.
+
+EOF
+	fi
+
+	local today
+	today=$(date -u +%Y-%m-%d)
+	local lines_to_remove
+	lines_to_remove=$(mktemp)
+	local escalated_ids=()
+	local escalated=0
+
+	while IFS=$'\t' read -r id count; do
+		[[ -z "$id" ]] && continue
+		local entry
+		entry=$(jq -rc --arg id "$id" 'select(.id == $id)' "$tmp_map" | head -1)
+		[[ -z "$entry" ]] && continue
+		local line_num severity raw
+		line_num=$(printf '%s\n' "$entry" | jq -r '.line')
+		severity=$(printf '%s\n' "$entry" | jq -r '.severity')
+		raw=$(printf '%s\n' "$entry" | jq -r '.raw')
+
+		local stripped
+		stripped=$(printf '%s\n' "$raw" | sed -E 's/^-[[:space:]]+\[[[:space:]]\][[:space:]]+\[[^]]+\][[:space:]]*//')
+
+		{
+			printf '%s\n' "- [ ] [escalated] $stripped"
+			echo "  - origin_severity: $severity"
+			echo "  - origin_id: $id"
+			echo "  - skipped_count: $count"
+			echo "  - escalated_on: $today"
+			echo "  - why: recurrent defensive skip by backlog-fix after $count cycle(s). Likely cause: scope too large, spec ambiguity, or pending product decision."
+			echo "  - cta: examine manually. See \`.claude/run/backlog-crush/*/\` for sub-agent skip reasons."
+			echo ""
+		} >> "$design_file"
+
+		echo "$line_num" >> "$lines_to_remove"
+		escalated_ids+=("$id")
+		escalated=$((escalated + 1))
+	done <<< "$stuck_data"
+
+	if [[ "$escalated" -gt 0 ]]; then
+		local drop_list
+		drop_list=$(sort -u "$lines_to_remove" | tr '\n' ',' | sed 's/,$//')
+		local tmp_bk
+		tmp_bk=$(mktemp)
+		awk -v lines="$drop_list" '
+			BEGIN {
+				n = split(lines, arr, ",")
+				for (i = 1; i <= n; i++) if (arr[i] != "") drop[arr[i]+0] = 1
+			}
+			!(NR in drop) { print }
+		' "$BACKLOG_FILE" > "$tmp_bk"
+		mv "$tmp_bk" "$BACKLOG_FILE"
+
+		# Clear skip counts for escalated ids — they no longer live in backlog.md.
+		local ids_json
+		ids_json=$(printf '%s\n' "${escalated_ids[@]}" | jq -R . | jq -s .)
+		local tmp_sk
+		tmp_sk=$(mktemp)
+		jq --argjson ids "$ids_json" \
+			'reduce $ids[] as $id (.; del(.[$id]))' \
+			"$skip_file" > "$tmp_sk"
+		mv "$tmp_sk" "$skip_file"
+	fi
+
+	rm -f "$tmp_map" "$lines_to_remove"
+	echo "backlog-crush: escalated $escalated item(s) to $design_file" >&2
+}
+
 # Mark each id as done by flipping "[ ]" to "[x]" on the matching line.
 # Arguments: space-separated list of ids (as produced by next-item).
 cmd_mark_done() {
@@ -393,7 +493,8 @@ Usage:
   backlog-crush.sh next-item
   backlog-crush.sh mark-done "<id1> <id2> ..."
   backlog-crush.sh record-skip "<id1> <id2> ..."  # bump skip-count for items not fixed this cycle
-  backlog-crush.sh annotate-blocked               # add "(blocked: ...)" marker; call at EXIT_STABLE
+  backlog-crush.sh annotate-blocked               # legacy: add "(blocked: ...)" marker in place
+  backlog-crush.sh escalate-stuck                 # move items with skip_count >= threshold to design-queue.md (preferred at EXIT_STABLE)
   backlog-crush.sh decide <N>
   backlog-crush.sh finalize
   backlog-crush.sh cleanup
@@ -411,6 +512,7 @@ main() {
 		mark-done) cmd_mark_done "${1:-}" ;;
 		record-skip) cmd_record_skip "${1:-}" ;;
 		annotate-blocked) cmd_annotate_blocked ;;
+		escalate-stuck) cmd_escalate_stuck ;;
 		decide)
 			if [[ $# -lt 1 ]]; then usage; fi
 			cmd_decide "$1"
