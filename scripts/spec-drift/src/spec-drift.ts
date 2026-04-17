@@ -10,16 +10,24 @@
 //
 // Run:
 //   node --experimental-strip-types ~/.claude/scripts/spec-drift/src/spec-drift.ts \
-//     [--specs-dir <path>] [--src-dir <path>] [--show-missing] [--json <path>]
+//     [--specs-dir <path>] [--src-dir <path>] [--show-missing] [--json <path>] \
+//     [--ignore-file <path>]
 //
 // Paths default to <cwd>/specs and <cwd>/src. If either is missing, the
 // script exits 0 with a "not spec-driven, skipping" notice — safe to wire
 // unconditionally into a post-implementation workflow.
 //
 // --json <path> writes a machine-readable report to <path> with fields
-// { skill, exit_code, checked_count, drift[], missing_count }. Each drift
-// entry includes a synthetic id for oscillation hashing by loop-clean.sh.
-// The console report is unaffected by this flag.
+// { skill, exit_code, checked_count, drift[], ignored[], missing_count }.
+// Each drift entry includes a synthetic id for oscillation hashing by
+// loop-clean.sh. The console report is unaffected by this flag.
+//
+// --ignore-file <path> points to a `.spec-drift-ignore` file listing
+// (TypeName @ spec_file # justification) entries that mask intentional
+// drifts (e.g. code is more strict than spec YAML due to a normative
+// invariant). Default: <cwd>/.spec-drift-ignore. Absent file = no
+// ignores. Justification is required and preserved in the JSON report
+// for traceability.
 //
 // Exit: 0 = no drift (or skipped), 1 = drift detected.
 
@@ -54,14 +62,71 @@ export interface CheckedDecl {
 	line: number;
 	prefix: string;
 	srcFile: string;
-	status: "OK" | "DRIFT";
+	status: "OK" | "DRIFT" | "IGNORED";
 	detail?: string;
+	ignoreReason?: string;
 }
 
 export interface MissingDecl {
 	name: string;
 	specFile: string;
 	line: number;
+}
+
+export interface IgnoreEntry {
+	name: string;
+	specFile: string;
+	reason: string;
+}
+
+// Parse a .spec-drift-ignore file. Returns [] if the file doesn't exist.
+// Throws if any non-blank, non-comment line is malformed — an ignore file
+// without a justification is a silent failure mode the skill explicitly
+// refuses: every mask must cite an invariant or DC.
+//
+// Format (one entry per line):
+//   TypeName @ spec_file_rel_path # reason citing invariant / DC
+//
+// Leading / trailing whitespace tolerated. Blank lines and lines starting
+// with `#` are comments.
+export function parseIgnoreFile(path: string): IgnoreEntry[] {
+	if (!existsSync(path)) return [];
+	const text = readFileSync(path, "utf8");
+	const entries: IgnoreEntry[] = [];
+	const lines = text.split(/\r?\n/);
+	for (let i = 0; i < lines.length; i += 1) {
+		const raw = lines[i];
+		const line = raw.trim();
+		if (line === "" || line.startsWith("#")) continue;
+		const hashIdx = line.indexOf("#");
+		if (hashIdx === -1) {
+			throw new Error(
+				`.spec-drift-ignore:${i + 1}: missing justification (format: 'TypeName @ spec_file # reason')`,
+			);
+		}
+		const before = line.slice(0, hashIdx).trim();
+		const reason = line.slice(hashIdx + 1).trim();
+		if (reason === "") {
+			throw new Error(
+				`.spec-drift-ignore:${i + 1}: justification after '#' is required`,
+			);
+		}
+		const atIdx = before.indexOf("@");
+		if (atIdx === -1) {
+			throw new Error(
+				`.spec-drift-ignore:${i + 1}: expected format 'TypeName @ spec_file # reason'`,
+			);
+		}
+		const name = before.slice(0, atIdx).trim();
+		const specFile = before.slice(atIdx + 1).trim();
+		if (name === "" || specFile === "") {
+			throw new Error(
+				`.spec-drift-ignore:${i + 1}: TypeName and spec_file must be non-empty`,
+			);
+		}
+		entries.push({ name, specFile, reason });
+	}
+	return entries;
 }
 
 function walkTsFiles(dir: string, out: string[]): void {
@@ -229,6 +294,28 @@ function classify(
 	}
 }
 
+// Mutates `checked` in place: any entry in DRIFT state whose
+// (name, spec_file_rel) matches an ignore entry is demoted to IGNORED,
+// with the justification attached. Relative path comparison uses `root`.
+export function applyIgnores(
+	checked: CheckedDecl[],
+	ignores: IgnoreEntry[],
+	root: string,
+): void {
+	if (ignores.length === 0) return;
+	const ignoreMap = new Map<string, IgnoreEntry>();
+	for (const e of ignores) ignoreMap.set(`${e.name}@${e.specFile}`, e);
+	for (const c of checked) {
+		if (c.status !== "DRIFT") continue;
+		const key = `${c.name}@${relative(root, c.specFile).replace(/\\/g, "/")}`;
+		const entry = ignoreMap.get(key);
+		if (entry) {
+			c.status = "IGNORED";
+			c.ignoreReason = entry.reason;
+		}
+	}
+}
+
 function printReport(
 	checked: CheckedDecl[],
 	missing: MissingDecl[],
@@ -236,10 +323,16 @@ function printReport(
 	root: string,
 ): number {
 	const drift = checked.filter((c) => c.status === "DRIFT");
-	const ok = checked.length - drift.length;
+	const ignored = checked.filter((c) => c.status === "IGNORED");
+	const ok = checked.length - drift.length - ignored.length;
 
+	const ignoredSegment =
+		ignored.length > 0 ? `, ${ignored.length} IGNORED` : "";
+	const missingSegment = showMissing
+		? `, ${missing.length} MISSING_IN_CODE`
+		: "";
 	console.log(
-		`Spec drift report: ${ok} OK, ${drift.length} DRIFT${showMissing ? `, ${missing.length} MISSING_IN_CODE` : ""}`,
+		`Spec drift report: ${ok} OK, ${drift.length} DRIFT${ignoredSegment}${missingSegment}`,
 	);
 	if (!showMissing && missing.length > 0) {
 		console.log(
@@ -257,6 +350,16 @@ function printReport(
 				const lines = c.detail.split("\n").slice(0, 8);
 				for (const l of lines) console.log(`    ${l.trim()}`);
 			}
+		}
+	}
+
+	if (ignored.length > 0) {
+		console.log("\n=== IGNORED (masked by .spec-drift-ignore) ===");
+		for (const c of ignored) {
+			console.log(
+				`  ${c.name}  (${relative(root, c.specFile)}:${c.line} <-> ${relative(root, c.srcFile)})`,
+			);
+			if (c.ignoreReason) console.log(`    reason: ${c.ignoreReason}`);
 		}
 	}
 
@@ -307,6 +410,7 @@ interface CliArgs {
 	srcDir: string;
 	showMissing: boolean;
 	jsonPath: string | null;
+	ignoreFile: string;
 }
 
 function parseArgs(argv: string[], cwd: string): CliArgs {
@@ -316,6 +420,7 @@ function parseArgs(argv: string[], cwd: string): CliArgs {
 	let srcDir = join(cwd, "src");
 	let showMissing = false;
 	let jsonPath: string | null = null;
+	let ignoreFile = join(cwd, ".spec-drift-ignore");
 	for (let i = 0; i < argv.length; i += 1) {
 		const a = argv[i];
 		if (a === "--specs-dir") {
@@ -335,16 +440,21 @@ function parseArgs(argv: string[], cwd: string): CliArgs {
 			if (!next) throw new Error("--json requires a path");
 			jsonPath = resolveArg(next);
 			i += 1;
+		} else if (a === "--ignore-file") {
+			const next = argv[i + 1];
+			if (!next) throw new Error("--ignore-file requires a path");
+			ignoreFile = resolveArg(next);
+			i += 1;
 		} else if (a === "--help" || a === "-h") {
 			console.log(
-				"Usage: spec-drift [--specs-dir <path>] [--src-dir <path>] [--show-missing] [--json <path>]",
+				"Usage: spec-drift [--specs-dir <path>] [--src-dir <path>] [--show-missing] [--json <path>] [--ignore-file <path>]",
 			);
 			process.exit(0);
 		} else {
 			throw new Error(`Unknown argument: ${a}`);
 		}
 	}
-	return { specsDir, srcDir, showMissing, jsonPath };
+	return { specsDir, srcDir, showMissing, jsonPath, ignoreFile };
 }
 
 // Synthetic id for drift entries, used by loop-clean.sh for oscillation hashing.
@@ -375,11 +485,27 @@ function writeJsonReport(
 				detail: c.detail ?? "",
 			};
 		});
+	const ignored = checked
+		.filter((c) => c.status === "IGNORED")
+		.map((c) => {
+			const specFileRel = relative(root, c.specFile);
+			const srcFileRel = relative(root, c.srcFile);
+			return {
+				id: driftId(c.name, specFileRel, srcFileRel),
+				name: c.name,
+				spec_file: specFileRel,
+				spec_line: c.line,
+				src_file: srcFileRel,
+				reason: c.ignoreReason ?? "",
+			};
+		});
 	const report = {
 		skill: "spec-drift",
 		exit_code: exitCode,
 		checked_count: checked.length,
 		drift,
+		ignored_count: ignored.length,
+		ignored,
 		missing_count: missing.length,
 	};
 	writeFileSync(jsonPath, JSON.stringify(report, null, 2));
@@ -408,6 +534,8 @@ function main(): void {
 		specsDir: args.specsDir,
 		srcDir: args.srcDir,
 	});
+	const ignoreEntries = parseIgnoreFile(args.ignoreFile);
+	applyIgnores(checked, ignoreEntries, cwd);
 	const exitCode = printReport(checked, missing, args.showMissing, cwd);
 	if (args.jsonPath) {
 		writeJsonReport(checked, missing, exitCode, args.jsonPath, cwd);

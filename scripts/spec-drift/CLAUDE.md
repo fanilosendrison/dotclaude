@@ -19,6 +19,10 @@ node --experimental-strip-types ~/.claude/scripts/spec-drift/src/spec-drift.ts -
 # Émettre un rapport JSON machine-readable (pour loop-clean ou CI)
 node --experimental-strip-types ~/.claude/scripts/spec-drift/src/spec-drift.ts \
   --json /tmp/spec-drift.json
+
+# Masquer des drifts intentionnels via un ignore file (défaut <cwd>/.spec-drift-ignore)
+node --experimental-strip-types ~/.claude/scripts/spec-drift/src/spec-drift.ts \
+  --ignore-file ./config/spec-drift-ignore
 ```
 
 ### Flag `--json <path>`
@@ -41,6 +45,17 @@ Le schéma :
       "detail": "Property 'level' is missing in type..."
     }
   ],
+  "ignored_count": 1,
+  "ignored": [
+    {
+      "id": "b2c3d4e5f6071889",
+      "name": "LLMRequest",
+      "spec_file": "specs/NIB-S.md",
+      "spec_line": 257,
+      "src_file": "src/types.ts",
+      "reason": "I-11: readonly override in code, spec YAML imprécise"
+    }
+  ],
   "missing_count": 3
 }
 ```
@@ -50,29 +65,67 @@ Le champ `id` est un hash synthétique stable :
 Il permet à `loop-clean.sh` de détecter l'oscillation entre itérations.
 
 Le fichier est écrit même en cas de skip silencieux (pas de `specs/` ou
-`src/`) : dans ce cas `checked_count=0`, `drift=[]`, `exit_code=0`.
+`src/`) : dans ce cas `checked_count=0`, `drift=[]`, `ignored=[]`, `exit_code=0`.
+
+**`drift.length` ≠ `checked_count`** : `drift.length` compte les divergences
+réelles ; `checked_count` compte tous les types vérifiés (OK + DRIFT + IGNORED).
+Un consumer qui affiche un résumé ("N drifts") doit lire `drift.length`, jamais
+`checked_count`.
+
+### Flag `--ignore-file <path>`
+
+Pointe vers un fichier `.spec-drift-ignore` qui masque des drifts **intentionnels**
+— cas où le code est délibérément plus strict que la spec YAML (ex: `readonly[]`
+via un invariant normatif, discriminated union vs union plate pour sûreté de type).
+
+Défaut : `<cwd>/.spec-drift-ignore`. Fichier absent = aucun ignore. Format :
+
+```
+# Commentaire — lignes vides et lignes commençant par # ignorées
+TypeName @ spec_file_relative_path # Justification OBLIGATOIRE (cite un invariant)
+
+# Exemples pour un projet spec-driven
+LLMRequest @ specs/NIB-S-LLMRUNTIME.md # I-11: readonly override, spec YAML imprécise
+LLMMessage @ specs/NIB-S-LLMRUNTIME.md # I-11: readonly arrays override
+```
+
+Règles :
+
+- La justification après `#` est **obligatoire** et non vide. Sinon `throw`.
+- Doit citer un invariant NIB, un DC, ou une décision produit documentée.
+- Le matching se fait sur `(TypeName, spec_file_relative_path)` — exact, case-sensitive.
+- Les entrées matchées sont déplacées de `drift[]` vers `ignored[]` dans le JSON,
+  avec la `reason` préservée pour traçabilité.
+- **Les IGNORED ne contribuent PAS à l'exit code** : exit 0 même s'il y a des
+  IGNORED, du moment qu'il n'y a plus de `drift[]` non masqué.
+
+Pourquoi c'est utile : sans ce mécanisme, un drift intentionnel revient à chaque
+itération de `/loop-clean` et trigger oscillation ou re-backlog — le skill
+consumer n'a pas moyen de distinguer "drift intentionnel" de "drift à résoudre".
 
 ## Flow
 
-1. Parse args : `--specs-dir`, `--src-dir`, `--show-missing`. Défauts : `<cwd>/specs` et `<cwd>/src`.
+1. Parse args : `--specs-dir`, `--src-dir`, `--show-missing`, `--json`, `--ignore-file`. Défauts : `<cwd>/specs`, `<cwd>/src`, `<cwd>/.spec-drift-ignore`.
 2. Si un des deux dossiers absent → exit 0 silencieux avec notice "not a spec-driven project".
 3. Walk `src/` récursif, indexe tout `export interface`/`export type` → Map<nom, file>.
 4. Pour chaque `specs/*.md`, extrait les blocs ```typescript``` (sauf ceux marqués `// spec-only`) et renomme chaque type avec un préfixe unique `B0001_`, `B0002_`, ... pour éviter les collisions entre specs.
 5. Génère un fichier temporaire d'assertions bidirectionnelles : pour chaque type `Foo` déclaré dans une spec ET exporté dans `src/`, écrit `const _a: Spec_B0001_Foo = {} as Actual_B0001_Foo;` et l'inverse.
 6. Lance `ts.createProgram` en mode strict sur le fichier temporaire ; les diagnostics mentionnant un préfixe unique classent le type correspondant comme DRIFT.
-7. Imprime un rapport : `N OK, M DRIFT`, puis liste les drifts avec le message tsc tronqué à 8 lignes.
-8. Nettoie le fichier temporaire (best-effort).
+7. Parse `.spec-drift-ignore` (si présent) → pour chaque entrée, déplace le DRIFT matching vers status IGNORED avec la `reason` attachée.
+8. Imprime un rapport : `N OK, M DRIFT, K IGNORED`, puis liste les drifts (puis les ignored) avec le message tsc tronqué à 8 lignes.
+9. Nettoie le fichier temporaire (best-effort).
 
 ## Invariants
 
-- Exit `0` = pas de drift (ou projet non spec-driven) ; exit `1` = drift détecté.
+- Exit `0` = pas de drift (ou projet non spec-driven, ou tous les drifts sont masqués par `.spec-drift-ignore`) ; exit `1` = drift non-masqué détecté.
 - Idempotent : aucune écriture dans le projet, seulement un fichier dans `tmpdir()` supprimé en fin d'exécution.
 - Cwd-agnostic : tout chemin est résolu depuis `process.cwd()` ou args absolus.
 - Les blocs ```typescript``` contenant `// spec-only` sont ignorés (types qui n'existent volontairement pas dans `src/`).
 - Types déclarés dans les specs mais absents de `src/` → classés MISSING (silencieux sauf `--show-missing`), pas bloquant.
+- `.spec-drift-ignore` parsing est **strict** : toute ligne non-blanche/non-comment doit respecter `TypeName @ spec_file # reason` avec une reason non-vide. Sinon le script throw (fail-closed sur un fichier mal formé plutôt que skip silencieusement).
 
 ## Output
 
-- Stdout : `Spec drift report: N OK, M DRIFT` + sections `=== DRIFT ===` et optionnellement `=== MISSING IN CODE ===`.
+- Stdout : `Spec drift report: N OK, M DRIFT[, K IGNORED][, L MISSING_IN_CODE]` + sections `=== DRIFT ===`, `=== IGNORED (masked by .spec-drift-ignore) ===` et optionnellement `=== MISSING IN CODE ===`.
 - Stderr : réservé aux erreurs d'exécution.
-- Exit code : `0` = clean ou skip, `1` = drift.
+- Exit code : `0` = clean, skip, ou tous drifts masqués ; `1` = drift non-masqué détecté.

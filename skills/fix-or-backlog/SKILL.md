@@ -212,11 +212,53 @@ Le fichier backlog est a `backlog.md` a la racine du repo.
   un nouvel item sera backlog'd avec une description/ligne potentiellement
   differente.
 - Sinon, ajouter a la fin du fichier.
-- Format de chaque item :
+- Format de chaque item (findings senior-review et dedup-codebase) :
 
 ```markdown
 - [ ] [SEVERITE] Fichier:ligne — Description courte du finding (date: YYYY-MM-DD, source: review de [nom de la tache/PR])
 ```
+
+### Granularite — regle normative
+
+**Un finding = une ligne backlog. Jamais de consolidation.**
+
+Si plusieurs findings touchent le meme fichier ou le meme concept, ils
+restent des lignes separees dans `backlog.md`. Consolider (ex: "19 derives
+sur src/types.ts" au lieu de 19 lignes) casse le workflow `backlog-fix` :
+le sub-agent est concu pour traiter 1 item atomique par cycle, il skip
+systematiquement les meta-items.
+
+Anti-pattern a eviter explicitement :
+
+```markdown
+# ❌ JAMAIS — meta-item consolide
+- [ ] [major] src/types.ts — 19 derives spec-drift : ProviderBinding sans provider, parseResponse signature, readonly vs mutable, ...
+
+# ✅ TOUJOURS — 1 line par drift/finding
+- [ ] [notable] spec-drift[ProviderBinding] — src/bindings/types.ts:52 <-> specs/NIB-S-LLMRUNTIME.md:530 — 'provider' missing (drift_id: 88ed555f)
+- [ ] [notable] spec-drift[ParsedProviderResponse] — src/bindings/types.ts:18 <-> specs/NIB-S-LLMRUNTIME.md:473 — signature divergence (drift_id: a1b2c3d4)
+- [ ] [notable] spec-drift[AdapterConfig] — src/types.ts:276 <-> specs/NIB-S-LLMRUNTIME.md:347 — retry optional vs required (drift_id: e5f6g7h8)
+```
+
+### Format specifique pour les findings spec-drift
+
+Le skill `spec-drift` emet un JSON dont chaque entree `drift[]` contient
+`id` (sha256 synthetique stable), `name` (type TypeScript), `spec_file`,
+`spec_line`, `src_file`, `detail` (message tsc tronque). Une ligne backlog
+par entree `drift[]`, au format :
+
+```markdown
+- [ ] [severite] spec-drift[TypeName] — src_file:src_line_or_? <-> spec_file:spec_line — <detail_court_1_ligne> (date: YYYY-MM-DD, drift_id: <id 16 chars>)
+```
+
+Regles :
+
+- Severite par defaut : `notable` (drift de types = correctness, pas critical).
+- `detail_court` : premiere ligne utile du `detail` tsc, troncature ≤ 120 chars.
+- `drift_id` : copier-coller depuis le JSON (champ `id`), 16 chars.
+- **Ne jamais lire `checked_count`** pour compter les drifts dans un resume :
+  `checked_count` = total types verifies (OK + DRIFT). Utiliser
+  `drift.length` ou filtrer `status === "DRIFT"`.
 
 ### Dedup pratique
 
@@ -226,18 +268,29 @@ run passe ; si le probleme re-apparait (regression), il merite une
 nouvelle ligne avec date recente — ne pas masquer sous pretexte que la
 cle match un historique `[x]`.
 
+Deux strategies de dedup selon le type de finding :
+
+**Findings senior-review et dedup-codebase** — cle : `file:line — desc[0:40]`
+
 ```bash
-# Construire la cle de dedup : "file:line — desc[0:40]"
-# IMPORTANT: dedup uniquement contre les items NON coches. Un [x] est
-# historique ; si le bug revient, on veut une nouvelle ligne [ ] avec
-# date recente pour que le reviewer voie la regression.
 key="src/foo.ts:42 — extractBlocks ignores CRLF line "
 if ! grep -E "^- \[ \]" backlog.md 2>/dev/null | grep -qF "$key"; then
     echo "- [ ] [notable] src/foo.ts:42 — extractBlocks ignores CRLF line endings (date: 2026-04-17, source: senior-review)" >> backlog.md
 fi
 ```
 
-Le skill applique cette regle pour chaque item a ajouter — pas de doublons
+**Findings spec-drift** — cle : `drift_id:` (exact, stable cross-session)
+
+```bash
+# Le drift_id est unique pour (name, spec_file, src_file) — collision impossible
+# entre drifts distincts, meme si 19 drifts touchent tous src/types.ts.
+drift_id="88ed555f52e1e1c4"
+if ! grep -E "^- \[ \]" backlog.md 2>/dev/null | grep -qF "drift_id: $drift_id"; then
+    echo "- [ ] [notable] spec-drift[EmbeddingBinding] — src/bindings/types.ts:? <-> specs/NIB-M-BINDING-EMBEDDING.md:40 — 'provider' is missing in type (date: 2026-04-18, drift_id: $drift_id)" >> backlog.md
+fi
+```
+
+Le skill applique ces regles pour chaque item a ajouter — pas de doublons
 entre sessions, mais les regressions restent visibles.
 
 ## Anti-patterns
