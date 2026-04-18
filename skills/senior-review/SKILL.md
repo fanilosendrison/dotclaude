@@ -2,12 +2,13 @@
 name: senior-review
 description: >
   Review hostile systematique de chaque modification de code. Evalue le diff
-  sur 10 axes (cheat detection, tests, edge cases, error paths, cross-ref,
-  dead code, nommage, performance, API surface, regression subtile) et produit
-  un rapport structure avec verdict CLEAN ou ISSUES FOUND. Chaque finding
-  inclut severite, evidence, et fix concret. Bloque le merge si critical ou
-  major. DOIT etre invoque apres chaque modification de code — meme niveau
-  d'obligation que le linting. Ne modifie aucun fichier.
+  sur 11 axes (cheat detection, tests, edge cases, error paths, cross-ref,
+  dead code, nommage, performance, API surface, regression subtile,
+  spec-drift direction) et produit un rapport structure avec verdict CLEAN
+  ou ISSUES FOUND. Chaque finding inclut severite, evidence, et fix concret.
+  Bloque le merge si critical ou major. DOIT etre invoque apres chaque
+  modification de code — meme niveau d'obligation que le linting. Ne modifie
+  aucun fichier.
 ---
 
 # Senior Review
@@ -179,6 +180,52 @@ Chercher :
 - Un comportement implicite dont dependent d'autres modules sans test explicite
 - Une condition de bord qui fonctionnait "par accident" et qui ne fonctionne plus
 
+### Axe 11 — Spec-drift direction
+
+S'applique uniquement aux diffs qui touchent `specs/*.md`. Filet de securite
+en aval des gates de `fix-or-backlog` : meme si un fix a traverse les gates
+et s'est applique, la review verifie sa direction.
+
+Pour **chaque** fichier modifie dans `specs/`, extraire le diff (hunks
+ajoutes/retires) et verifier :
+
+- **Le diff relaxe-t-il une regle normative ?** Patterns :
+  - `readonly` retire d'un champ, d'un tableau, d'un objet
+  - `required` → `optional` sur un champ (`foo: X` → `foo?: X`)
+  - Un champ obligatoire supprime sans remplacement
+  - Un enum elargi (ajout de cas non documente ailleurs)
+  - Un `as const` retire
+  - Un mot "obligatoire", "MUST", "DOIT", "requis" retire d'une phrase
+    adjacente au bloc modifie
+
+  Si oui → `critical`. Un relaxement normatif dans `specs/` sans nouveau
+  NIB visible dans le diff (autre spec ajoutee ou section "Rationale"
+  citant un NIB) est un bug de conformite de la chaine outils, pas un
+  fix legitime.
+
+- **Le diff modifie-t-il un type reexporte depuis `src/index.ts` ?**
+  Grep `src/index.ts` pour le nom de type modifie. Si match (named
+  re-export ou star re-export 1-hop) → `critical`. Une modif de surface
+  publique exige un nouveau NIB, jamais un alignement de spec passe en
+  review.
+
+- **Le diff cree-t-il une incoherence cross-spec ?** Pour chaque type
+  modifie, grep les autres `specs/*.md` pour `interface X` / `type X`.
+  Si le type est declare dans ≥2 specs et que le diff n'en touche qu'une
+  → `major`. L'alignement partiel divergerait les sources de verite.
+
+- **Le commit ou message de review ne tague pas la direction ?** Si le
+  diff touche `specs/` mais qu'aucun des tags `[code→spec]`,
+  `[spec→code:completion]`, `[escalated]` n'apparait dans le titre du
+  commit en cours (`git log -1 --format=%s` pour commits existants, ou
+  le dernier message de commit prepare si WIP) → `notable`. Un diff
+  specs/ sans direction tag masque la nature du changement.
+
+Cas particulier : si le diff **ajoute** un nouveau fichier `specs/*.md`
+(nouveau NIB), ce n'est pas un drift — pas de finding sur cet axe. Le
+tag `[material]` est cohérent avec "nouveau NIB" mais reste hors perimetre
+backlog (le nouveau NIB a du etre propose manuellement).
+
 ### Calibration de severite
 
 Avant d'assigner une severite, appliquer ce test :
@@ -316,10 +363,10 @@ par `loop-clean.sh`.
 
 ### Axes (valeur du champ `axis`)
 
-Utiliser l'un des dix labels suivants, exactement :
+Utiliser l'un des onze labels suivants, exactement :
 `cheat-detection`, `tests-themselves`, `edge-cases`, `error-paths`,
 `cross-ref-impact`, `dead-code-weak-typing`, `naming-readability`,
-`performance`, `api-surface`, `subtle-regression`.
+`performance`, `api-surface`, `subtle-regression`, `spec-drift-direction`.
 
 ### Directive de stabilite du `problem`
 

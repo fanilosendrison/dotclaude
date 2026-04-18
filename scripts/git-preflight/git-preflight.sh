@@ -145,23 +145,7 @@ else
   ACTIONS+=("gh-create")
 fi
 
-# --- Step 9: dev branch ---
-if [ -d ".git" ] && git branch --list dev | grep -q dev 2>/dev/null; then
-  echo "OK: dev branch exists"
-  # Check if we're on dev
-  CURRENT=$(git branch --show-current 2>/dev/null || echo "")
-  if [ "$CURRENT" != "dev" ]; then
-    echo "NEED: switch to dev branch (current: $CURRENT)"
-    ACTIONS+=("switch-dev")
-  else
-    echo "OK: on dev branch"
-  fi
-else
-  echo "NEED: create and switch to dev branch"
-  ACTIONS+=("create-dev")
-fi
-
-# --- Step 10: branch protection on main ---
+# --- Step 9: branch protection on main ---
 if [ -d ".git" ] && git remote get-url origin &>/dev/null; then
   REPO_FULL=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "")
   if [ -n "$REPO_FULL" ]; then
@@ -176,7 +160,7 @@ if [ -d ".git" ] && git remote get-url origin &>/dev/null; then
   fi
 fi
 
-# --- Step 11: gitleaks pre-commit hook ---
+# --- Step 10: gitleaks pre-commit hook ---
 if [ -d ".git" ]; then
   if [ -f ".git/hooks/pre-commit" ] && grep -q "gitleaks" .git/hooks/pre-commit 2>/dev/null; then
     echo "OK: gitleaks pre-commit hook"
@@ -191,7 +175,7 @@ if [ -d ".git" ]; then
   fi
 fi
 
-# --- Step 12: git-cliff / cliff.toml ---
+# --- Step 11: git-cliff / cliff.toml ---
 if [ -f "cliff.toml" ]; then
   echo "OK: cliff.toml exists (changelog autogeneration)"
 else
@@ -204,7 +188,7 @@ else
   fi
 fi
 
-# --- Step 13: README.md ---
+# --- Step 12: README.md ---
 if [ -f "README.md" ]; then
   echo "OK: README.md exists"
 else
@@ -212,7 +196,7 @@ else
   ACTIONS+=("readme-create")
 fi
 
-# --- Step 14: .gitmessage (commit template) ---
+# --- Step 13: .gitmessage (commit template) ---
 if [ -f ".gitmessage" ]; then
   echo "OK: .gitmessage exists"
   # Check if configured as commit template

@@ -117,6 +117,64 @@ dans le diff, c'est du code frais. Sinon, c'est pre-existant.
   separee
 - Style/convention dans du code pre-existant
 
+### Gates normatifs sur findings spec-drift (non-negociables)
+
+Le skill `spec-drift` emet pour chaque drift un champ `direction` ∈
+{`block`, `ambiguous`} calcule a partir de trois hints deterministes
+(cf. `~/.claude/scripts/spec-drift/CLAUDE.md` section "Champs hints").
+Ces gates sont appliques AVANT la matrice de decision standard et la
+surclassent :
+
+**Si `direction == "block"`** → routage obligatoire vers `design-queue.md`
+avec `severity: design`. Le finding n'entre **jamais** dans `backlog.md`
+et n'est **jamais** auto-fixe. Les signaux qui peuvent declencher `block` :
+
+- `hints.normative_language` non-vide → la spec utilise `MUST`,
+  `obligatoire`, `DOIT`, etc. a proximite du drift. Aligner spec au code
+  relaxerait une regle normative explicite. Cas typique : spec dit "le
+  champ X est obligatoire", code a rendu X optional → il faut **corriger
+  le code**, pas relaxer la spec.
+- `hints.api_surface == true` → type expose depuis `src/index.ts`. Toute
+  modification = breaking change = nouveau NIB requis. Cas typique :
+  renommer un parametre d'une methode publique, changer une signature
+  exportee.
+- `hints.cross_spec_files` non-vide → type declare dans plusieurs specs.
+  Aligner un seul cote cree une incoherence cross-spec. Exiger arbitrage
+  humain pour trancher la source de verite.
+
+Le `reason_why_design` du design-queue copie directement
+`drift.direction_reason` pour tracabilite.
+
+**Si `direction == "ambiguous"`** → flux standard (matrice + severite
+`notable` par defaut). MAIS le commit message du fix doit distinguer la
+direction effective (cf. section "Commit message discipline").
+
+### Gates de coherence sur tout fix touchant `specs/`
+
+Ces gates s'appliquent a **tous** les findings dont le fix modifie
+`specs/`, pas seulement aux drifts. Leur violation bloque le fix et
+l'escalade en design-queue :
+
+1. **Single-layer rule** : un item backlog ne doit jamais modifier
+   `specs/` ET `src/` dans le meme fix atomique. Si les deux sont
+   necessaires : splitter en deux items distincts avec des
+   `observable_change` orthogonaux. Motif : un fix mixte masque la
+   direction de l'alignement et rend le commit impossible a reviewer.
+2. **No-relaxation rule** : si la modification de spec **relaxe** une
+   regle (passage `required` → `optional`, suppression `readonly`,
+   elargissement d'un enum, transformation "obligatoire" → "optionnel")
+   ET que le contexte de la spec (± 10 lignes) contient un mot-cle
+   normatif (`MUST`, `obligatoire`, `DOIT`, `requis`, etc.) → refuser le
+   fix, escalader en design-queue comme `design`. Un relaxement
+   normatif requiert un nouveau NIB.
+3. **API surface rule** : si la modification touche un type exporte depuis
+   `src/index.ts` (direct ou via re-export 1-hop) → refuser le fix auto,
+   escalader en design-queue. Breaking change = nouveau NIB.
+
+Ces gates sont appliques par l'orchestrateur fix-or-backlog **au moment
+du routage (phase 6)**. Les sub-agents `fix-file` / `backlog-fix`
+supposent que les items qu'ils recoivent ont deja passe les gates.
+
 ## Procedure
 
 1. **Collecter les findings** depuis la senior review dans le contexte
@@ -165,12 +223,20 @@ dans le diff, c'est du code frais. Sinon, c'est pre-existant.
    l'appel `Agent(...)` — laisser le frontmatter de l'agent decider.
    L'orchestrateur du skill reste sur le model de la session parent ; seuls
    les sub-agents sont pinnes sur Opus 4.6 / effort xhigh.
-6. **Router les items BACKLOG selon leur severite** (routage normatif, pas optionnel) :
+6. **Router les items BACKLOG selon leur severite + gates normatifs** (routage normatif, pas optionnel) :
 
+   **6a. Appliquer les gates normatifs en priorite** (cf. sections **Gates normatifs sur findings spec-drift** et **Gates de coherence sur tout fix touchant specs/**). Un finding qui declenche un gate est **automatiquement** re-severite-ise a `design` et route en design-queue, meme si son severity d'origine etait `notable`/`minor`/etc. Signaux :
+
+   - Finding de source `spec-drift` dont `direction == "block"` → design-queue (reason = `direction_reason` du drift).
+   - Finding dont le fix propose modifie `specs/` ET `src/` dans le meme diff → design-queue (reason = "single-layer violation").
+   - Finding dont le fix propose relaxe une regle normative (retrait de `readonly`, transformation `required` → `optional`, etc.) avec mot-cle normatif ± 10 lignes → design-queue (reason = "no-relaxation violation: <keyword>").
+   - Finding dont le fix propose touche un type exporte depuis `src/index.ts` → design-queue (reason = "api-surface violation").
+
+   **6b. Routage standard** (post-gates) :
    - Si `severity` ∈ {`critical`, `major`, `notable`, `minor`, `nit`} → appender dans `backlog.md` avec le format standard (cf. section **Backlog file**). Dedup par `file:line — desc[0:40]` ou par `drift_id:` pour les findings spec-drift.
-   - Si `severity` == `design` → appender dans `design-queue.md` avec le format natif design (cf. section **Design-queue file**). Dedup par `design_id:`. **Ne JAMAIS** ecrire un item `design` dans `backlog.md`.
+   - Si `severity` == `design` (natif OU re-severite-ise par gate 6a) → appender dans `design-queue.md` avec le format natif design (cf. section **Design-queue file**). Dedup par `design_id:` ou `drift_id:`. **Ne JAMAIS** ecrire un item `design` (ou gate-bloque) dans `backlog.md`.
 
-   Le JSON d'emission (cf. section **Emission JSON**) doit refleter le split via deux champs distincts : `backlog_added[]` (severites auto-fixables) et `design_queue_added[]` (severite `design`).
+   Le JSON d'emission (cf. section **Emission JSON**) doit refleter le split via deux champs distincts : `backlog_added[]` (severites auto-fixables, post-gates) et `design_queue_added[]` (severite `design` native + items re-severite-ises par gates). Chaque entree de `design_queue_added[]` doit inclure un champ `gate_triggered` si elle vient d'un gate (`"direction-block"`, `"single-layer"`, `"no-relaxation"`, `"api-surface"`) — null si le finding etait deja natif `design`.
 7. Si un finding est reellement ambigu entre fix et backlog, escalader
    uniquement celui-la.
 8. **Consolider les retours des sub-agents `fix-file`** : aggreger les
@@ -265,21 +331,38 @@ Anti-pattern a eviter explicitement :
 
 Le skill `spec-drift` emet un JSON dont chaque entree `drift[]` contient
 `id` (sha256 synthetique stable), `name` (type TypeScript), `spec_file`,
-`spec_line`, `src_file`, `detail` (message tsc tronque). Une ligne backlog
-par entree `drift[]`, au format :
+`spec_line`, `src_file`, `detail` (message tsc tronque), `hints`
+(normative_language/api_surface/cross_spec_files), `direction` (`block`
+ou `ambiguous`), `direction_reason` (human-readable).
 
-```markdown
-- [ ] [severite] spec-drift[TypeName] — src_file:src_line_or_? <-> spec_file:spec_line — <detail_court_1_ligne> (date: YYYY-MM-DD, drift_id: <id 16 chars>)
-```
+**Avant de formatter la ligne, appliquer le gate 6a** :
+
+- Si `direction == "block"` → ajouter a `design-queue.md` comme item
+  natif `design`, **pas** a `backlog.md`. Le `reason_why_design` est le
+  `direction_reason` du drift. Format :
+  ```markdown
+  - [ ] [design] spec-drift[TypeName] — src_file:? <-> spec_file:spec_line — <detail_court> (date: YYYY-MM-DD, drift_id: <16>, gate_triggered: direction-block)
+    - **FIX propose** : alignement spec <-> code, direction a trancher
+    - **Pourquoi design** : <direction_reason copie tel quel>
+    - **Decision requise** : aligner code sur spec, spec sur code (avec justification), ou refondre l'invariant ?
+  ```
+
+- Si `direction == "ambiguous"` → format backlog standard :
+  ```markdown
+  - [ ] [severite] spec-drift[TypeName] — src_file:src_line_or_? <-> spec_file:spec_line — <detail_court_1_ligne> (date: YYYY-MM-DD, drift_id: <id 16 chars>)
+  ```
 
 Regles :
 
-- Severite par defaut : `notable` (drift de types = correctness, pas critical).
+- Severite par defaut pour `ambiguous` : `notable` (drift de types = correctness, pas critical).
 - `detail_court` : premiere ligne utile du `detail` tsc, troncature ≤ 120 chars.
 - `drift_id` : copier-coller depuis le JSON (champ `id`), 16 chars.
 - **Ne jamais lire `checked_count`** pour compter les drifts dans un resume :
   `checked_count` = total types verifies (OK + DRIFT). Utiliser
   `drift.length` ou filtrer `status === "DRIFT"`.
+- **Ne jamais ignorer `direction`** : un drift `block` qui atterrit dans
+  `backlog.md` comme `notable` est un bug de conformite du skill. La regle
+  est un gate, pas un hint.
 
 ### Dedup pratique
 
@@ -359,6 +442,42 @@ Quand un item est resolu (decision prise + implementation si applicable), le coc
 
 Ne jamais supprimer un `[x]` pour regression — ajouter une nouvelle ligne comme pour `backlog.md`.
 
+## Commit message discipline pour les fixes touchant `specs/`
+
+Quand un fix est applique et modifie `specs/` (directement ou via un fix
+atomique), le commit message doit tagger la **direction** du fix dans le
+titre pour qu'un humain puisse reviewer d'un coup d'oeil sans ouvrir le
+diff :
+
+- `[code→spec]` — le fix corrige le code pour matcher une spec qui est la
+  source de verite. Pas de modification de `specs/` dans le commit.
+- `[spec→code:completion]` — la spec etait silencieuse ou imprecise sur un
+  invariant que d'autres parties de la spec presupposaient. Le fix ajoute
+  la precision manquante. MUST cite l'invariant source presuppose (ex:
+  `I-11`, `I-2`, un DC). **Ne relaxe jamais** une regle normative.
+- `[escalated]` — aucun fix auto applique, item route en design-queue.
+
+Format de titre d'un commit de batch :
+
+```
+fix(spec-drift): <N> items resolved [<breakdown par direction>]
+
+- [code→spec]              <N1> items — corrections pures
+- [spec→code:completion]   <N2> items — precisions d'invariant, invariant cite
+- [escalated]              <N3> items — design-queue.md pour arbitrage
+```
+
+Un commit qui dit "align specs to code patterns" sans ventilation des
+directions est un anti-pattern : il masque la nature du changement. Si
+une session produit ≥2 items avec directions melangees, splitter en ≥2
+commits, un par direction.
+
+Interdit absolument :
+
+- `[spec→code:material]` comme direction appliquee. Une "materialisation
+  ex post" d'un invariant architectural n'est jamais un fix backlog :
+  c'est un nouveau NIB. Router en design-queue.
+
 ## Anti-patterns
 
 - Ne PAS tout backlog parce que "0 critical, 0 major". Les notables sur du
@@ -386,7 +505,10 @@ rapport humain standard.
     {
       "finding_id": "string",
       "file": "string",
-      "change_summary": "string"
+      "files_touched": ["string"],
+      "change_summary": "string",
+      "source": "senior-review" | "dedup-codebase" | "spec-drift",
+      "direction": "code→spec" | "spec→code:completion" | null
     }
   ],
   "backlog_added": [
@@ -400,7 +522,8 @@ rapport humain standard.
     {
       "finding_id": "string",
       "file": "string",
-      "reason_why_design": "string (pourquoi observable_change n'a pas pu etre formule)"
+      "reason_why_design": "string (pourquoi observable_change n'a pas pu etre formule, ou direction_reason du drift)",
+      "gate_triggered": "direction-block" | "single-layer" | "no-relaxation" | "api-surface" | null
     }
   ],
   "escalated": [
@@ -415,6 +538,19 @@ rapport humain standard.
 
 - `fix_now_applied` : findings classes FIX NOW qui ont ete appliques dans ce
   pass. Un finding est ici SSI le fichier a ete modifie.
+  - `source` : d'ou vient le finding (`senior-review`, `dedup-codebase`,
+    `spec-drift`). Derive du JSON d'origine lu en phase 1.
+  - `files_touched[]` : tous les fichiers modifies par le fix (1 pour
+    single-file, plusieurs pour cross-file). `file` reste pour compat
+    et pointe sur le premier element.
+  - `direction` : OBLIGATOIRE si `source == "spec-drift"`, `null` sinon.
+    Derive **deterministiquement** des `files_touched[]` (pas de jugement
+    LLM) :
+    - Tous les fichiers dans `src/` (ou hors `specs/`) → `"code→spec"`
+    - Tous les fichiers dans `specs/` → `"spec→code:completion"`
+    - Mixte (specs/ + src/) → **IMPOSSIBLE** : bloque par gate 6a
+      (single-layer rule). Si cet etat est detecte, le skill DOIT lever
+      une erreur plutot que d'emettre direction incoherente.
 - `backlog_added` : findings `critical|major|notable|minor|nit` ajoutes a `backlog.md`. **Ne contient JAMAIS** de severite `design`.
 - `design_queue_added` : findings `severity == "design"` ajoutes a `design-queue.md`. File humaine — aucun traitement auto en aval.
 - `escalated` : findings reellement ambigus, remontes au mainteneur. Liste

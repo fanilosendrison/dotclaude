@@ -179,6 +179,29 @@ Stdout = rapport markdown avec breakdown par sévérité. **C'est ce que tu reto
 - **Ignorer le WARNING nocturne en journée** : le skill peut consommer 30+ min. En journée, `/backlog-crush` est plus adapté.
 - **Tourner en parallèle avec `/backlog-crush`** : les deux écrivent sur `backlog.md`. Sérialiser.
 
+## Format des commits (hérité de loop-clean)
+
+Les commits par cycle sont produits par `loop-clean.sh commit-iter` (via l'agent `loop-clean-orchestrator`). Le titre reste concis (≤ 72 chars) ; la ventilation spec-drift apparaît dans le body du commit pour rester visible via `git show` / `git log --format=%B` sans polluer `git log --oneline` :
+
+```
+chore(loop-clean): iter N — X applied, Y escalated, Z backlog
+
+Session: <id> | RUN_DIR: <dir> | iter-NNN
+
+Spec-drift direction breakdown:
+  - code→spec: N1
+  - spec→code:completion: N2
+  - escalated (direction-block): N3
+  - escalated (other gates: single-layer / no-relaxation / api-surface): N4
+
+Applied: ...
+Escalated: ...
+```
+
+Le bloc `Spec-drift direction breakdown:` apparaît UNIQUEMENT si au moins un fix spec-drift a été appliqué ou escaladé dans le cycle. Sans cette ventilation, un reviewer humain ne peut pas distinguer les fixes `code→spec` (corrections pures) des `spec→code:completion` (précisions de spec) qui n'ont pas la même charge de review. Les gates non-spec-drift (single-layer, no-relaxation, api-surface) sont agrégés sur une ligne séparée car leur attribution source est non-spec-drift.
+
+**Ne pas patcher manuellement** le body — la ventilation vient de `fix-or-backlog.json` (champs `fix_now_applied[].source` + `direction` + `design_queue_added[].gate_triggered`). Si un count est à 0 là où tu en attendais, c'est que fix-or-backlog n'a pas émis correctement les champs : fichier un bug backlog contre ce skill, ne contourne pas.
+
 ## Output attendu
 
 Retourne le rapport markdown de `finalize` (avec breakdown par sévérité), enrichi des `notes[]` consolidées des sub-agents `backlog-fix` durant la boucle.

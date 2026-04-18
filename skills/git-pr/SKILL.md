@@ -61,11 +61,13 @@ Quatre sections :
 
 ## Stratégies de merge
 
+Workflow trunk-based (voir skill `git-branches`) : toutes les branches éphémères mergent dans `main`.
+
 | Type de branche | Stratégie | Pourquoi |
 |-----------------|----------|---------|
-| `feature/`, `fix/`, `chore/`, `docs/` → `dev` | **Squash and merge** | Historique clean : un commit = un changement logique |
-| `dev` → `main` | **Merge commit** (no fast-forward) | Préserve la topologie pour la traçabilité des releases |
-| `hotfix/` → `main` | **Merge commit** (no fast-forward) | Préserve la topologie du hotfix |
+| `feature/`, `fix/`, `chore/`, `docs/` → `main` | **Squash and merge** OU **Rebase** | Squash pour un commit unique (historique compact) ; rebase pour préserver plusieurs commits atomiques de la branche |
+| `hotfix/` → `main` | **Merge commit** (no fast-forward) OU **Rebase** | Merge commit si tu veux que le hotfix apparaisse comme unité topologique ; rebase si la série de commits est déjà propre |
+| Branches d'automation (nightly-clean, etc.) → `main` | **Rebase and merge** | Préserve les commits atomiques produits par l'agent |
 
 ### Squash and Merge
 
@@ -83,7 +85,7 @@ Quatre sections :
 
 ### Avant d'ouvrir
 
-1. **Rebase** sur `dev` (ou `main` pour les hotfixes) et résoudre les conflits sur ta branche
+1. **Rebase** sur `main` et résoudre les conflits sur ta branche
 2. **Self-review** le diff — attraper les erreurs évidentes avant de merger
 3. **CI doit être green** — pas de PR avec un pipeline cassé
 4. Tous les items de checklist du template doivent être adressés
@@ -96,22 +98,9 @@ Quatre sections :
 
 ### Après merge
 
-1. **Supprimer** la branche source immédiatement (sauf `dev` évidemment)
-2. Vérifier que le CI passe sur la branche cible post-merge
-3. Si le merge introduit une régression, revert immédiatement
-4. **Back-sync `dev` après un merge `dev → main`** — obligatoire si la stratégie était *Merge Commit* (no-ff). Le merge commit est créé sur `main` uniquement ; sans back-sync, `dev` et `main` divergent topologiquement et la divergence se cumule à chaque PR.
-
-   Procédure (à lancer immédiatement après `gh pr merge … --merge`) :
-
-   ```bash
-   git checkout dev
-   git pull origin main --ff-only   # ff-only est safe : le HEAD de dev est ancêtre du merge commit
-   git push
-   ```
-
-   Si `--ff-only` échoue, c'est que dev a reçu de nouveaux commits entre-temps — dans ce cas, ouvrir une nouvelle PR plutôt que de merger à la main.
-
-   Ne s'applique **pas** aux PRs *Squash and merge* (feature → dev) : le squash ne crée pas de merge commit, donc pas de divergence topologique à rappatrier.
+1. **Supprimer** la branche source immédiatement (locale + remote) — `gh pr merge --delete-branch` le fait en une commande
+2. Vérifier que le CI passe sur `main` post-merge
+3. Si le merge introduit une régression, revert immédiatement (`git revert <merge-sha>`)
 
 ## Anti-patterns
 
@@ -124,4 +113,4 @@ Quatre sections :
 - **Générer la description de PR** quand l'utilisateur le demande — remplir le template à partir du diff et du contexte
 - **Valider le titre** contre le format Conventional Commits
 - **Signaler les PRs trop grosses** et suggérer comment les split
-- **Rappeler le rebase** si la branche est derrière `dev`
+- **Rappeler le rebase** si la branche est derrière `main`

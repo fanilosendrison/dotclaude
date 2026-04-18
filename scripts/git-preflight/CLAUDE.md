@@ -1,6 +1,6 @@
 # git-preflight — Git & GitHub Init Checker
 
-Diagnostic idempotent qui vérifie si un repo est correctement initialisé (git + GitHub remote + branche dev + tooling).
+Diagnostic idempotent qui vérifie si un repo est correctement initialisé (git + GitHub remote + tooling). Workflow trunk-based : une seule branche `main` par défaut. Les feature branches sont éphémères, créées à la demande par le développeur.
 
 ## Usage
 
@@ -18,12 +18,11 @@ bash ~/.claude/scripts/git-preflight/git-preflight.sh "$PWD"
 6. Scan fichiers sensibles — `.env`, `*.key`, `credentials.json`, etc. → ajout auto au `.gitignore` si manquants
 7. `git add . && commit` — initial commit ?
 8. `gh repo create --private` — remote GitHub ?
-9. `git checkout -b dev` — branche dev créée + active ?
-10. Branch protection `main` — force-push bloqué + suppression bloquée ?
-11. gitleaks pre-commit hook — installé et actif ?
-12. `cliff.toml` — git-cliff configuré pour autogénération du CHANGELOG ?
-13. `README.md` — existe (minimum : nom du projet) ?
-14. `.gitmessage` — commit template configuré ? (optionnel)
+9. Branch protection `main` — force-push bloqué + suppression bloquée ?
+10. gitleaks pre-commit hook — installé et actif ?
+11. `cliff.toml` — git-cliff configuré pour autogénération du CHANGELOG ?
+12. `README.md` — existe (minimum : nom du projet) ?
+13. `.gitmessage` — commit template configuré ? (optionnel)
 
 ## Output
 
@@ -42,8 +41,6 @@ bash ~/.claude/scripts/git-preflight/git-preflight.sh "$PWD"
 | `gitignore-secrets` | Ajouter les fichiers sensibles détectés au `.gitignore` |
 | `initial-commit` | Créer l'initial commit |
 | `gh-create` | Créer le repo GitHub privé + push |
-| `create-dev` | Créer la branche `dev` et basculer dessus |
-| `switch-dev` | Basculer sur la branche `dev` existante |
 | `branch-protection` | Activer la protection sur `main` (block force-push + delete) |
 | `gitleaks-install` | Installer gitleaks + créer le hook pre-commit |
 | `gitleaks-hook` | Créer le hook pre-commit gitleaks (binaire déjà présent) |
@@ -125,7 +122,6 @@ Pour le lint, format et validation de commits → utiliser les **hooks Claude Co
 
 - [ ] `.gitignore` couvre artifacts, secrets, fichiers IDE, OS, logs, coverage
 - [ ] `.gitattributes` normalise les line endings
-- [ ] Branche `dev` créée et active (on doit être sur `dev`, pas `main`)
 - [ ] Branch protection active sur `main`
 - [ ] gitleaks fonctionne (`echo "API_KEY=test" > leak.txt && git add leak.txt && git commit -m "test"` → bloqué)
 - [ ] `cliff.toml` existe (config git-cliff pour l'autogénération du changelog)

@@ -5,7 +5,7 @@ description: Guide branching strategy, branch creation, and naming conventions. 
 
 # Git Branches
 
-Stratégie de branches simple pour un dev solo : `main` + `dev` + branches éphémères.
+Stratégie trunk-based pour un dev solo : `main` unique + branches éphémères à la demande.
 
 ## Trigger
 
@@ -16,33 +16,32 @@ L'utilisateur a besoin de guidance sur les branches. Signaux :
 
 ## Modèle
 
-`main` (production) → `dev` (travail courant) → branches éphémères.
+**Trunk-based** : `main` est l'unique branche permanente. On travaille directement dessus pour les changements courants. Les branches éphémères ne sont créées **que pour les chantiers risqués ou multi-commits qu'on veut batcher**.
 
-- `main` est toujours déployable, on n'y touche pas directement
-- `dev` est la branche de travail par défaut — c'est là qu'on vit au quotidien
-- Les branches éphémères partent de `dev` et mergent dans `dev`
-- Quand c'est prêt pour la prod : `dev` → `main` via PR
-- Après un `git init`, on se retrouve sur `dev` direct
+- `main` est toujours déployable
+- Pas de branche `dev` — simplicité solo-dev, pas de gate review
+- Commits directs sur `main` pour : docs, fixes simples, refactors locaux, tâches terminées en une session
+- Branche éphémère créée à la demande pour : migrations multi-jours, features à découper, expérimentations réversibles, refactors qui touchent beaucoup de fichiers
+- Les automations (nightly-clean, routines cloud) opèrent sur leurs propres branches dédiées et mergent via PR — indépendantes de la stratégie humaine
 
-### Branches permanentes
+### Branche permanente
 
 | Branche | Rôle | Règles |
 |---------|------|--------|
-| `main` | Code production-ready, toujours déployable | Pas de push direct. Merge depuis `dev` via PR uniquement. Jamais de force-push. |
-| `dev` | Branche de travail courante | Branche par défaut après init. Les éphémères mergent ici. |
+| `main` | Trunk. Toujours déployable. | Commits directs autorisés. Jamais de force-push. Branch protection active (block force-push + delete). |
 
-### Branches éphémères
+### Branches éphémères (à la demande)
 
 | Préfixe | Usage | Créée depuis | Merge dans |
 |---------|-------|-------------|------------|
-| `feature/` | Nouvelle fonctionnalité | `dev` | `dev` |
-| `fix/` | Correction de bug | `dev` | `dev` |
-| `hotfix/` | Fix critique en production | `main` | `main` + `dev` |
-| `chore/` | Maintenance, tooling, refactoring | `dev` | `dev` |
-| `docs/` | Documentation uniquement | `dev` | `dev` |
-| `experiment/` | POC, spike, exploration | `dev` | `dev` ou abandon |
+| `feature/` | Nouvelle fonctionnalité multi-commits | `main` | `main` |
+| `fix/` | Bug fix nécessitant plusieurs commits | `main` | `main` |
+| `hotfix/` | Fix critique à isoler | `main` | `main` |
+| `chore/` | Maintenance/refactor multi-fichiers à batcher | `main` | `main` |
+| `docs/` | Rare — pour doc work multi-session | `main` | `main` |
+| `experiment/` | POC / spike, réversible | `main` | `main` ou abandon |
 
-> `hotfix/` est la seule exception : part de `main`, merge dans `main` ET `dev`.
+**Heuristique** : si le travail tient en une session avec un commit propre, vas direct sur `main`. Si tu prévois plusieurs commits à reviewer en bloc ou à pouvoir reverter d'un coup, crée une branche.
 
 ## Convention de nommage
 
@@ -91,19 +90,25 @@ feature/2025-01-15-auth
 fix/bug
 feature/update
 chore/stuff
+
+# ❌ Branche dev permanente recréée à l'aveugle
+dev
+develop
 ```
 
-## Cycle de vie
+## Cycle de vie d'une branche éphémère
 
-1. **Créer** depuis `dev` (sauf `hotfix/` → depuis `main`)
+1. **Créer** depuis `main` à jour : `git checkout main && git pull && git checkout -b <type>/<desc>`
 2. **Travailler** — commits fréquents, push régulier
-3. **Rebase** sur `dev` avant d'ouvrir la PR (résoudre les conflits sur ta branche)
-4. **Ouvrir la PR** vers `dev` — suivre la convention PR (voir skill `git-pr`)
-5. **Merge** — squash pour features/fixes, merge commit pour hotfixes
-6. **Supprimer** la branche immédiatement après merge
+3. **Rebase** sur `main` avant d'ouvrir la PR (résoudre les conflits sur ta branche)
+4. **Ouvrir la PR** vers `main` — suivre la convention PR (voir skill `git-pr`)
+5. **Merge** — rebase ou squash selon la granularité voulue (voir skill `git-pr`)
+6. **Supprimer** la branche immédiatement après merge (locale + remote)
 
 ## Guidelines
 
+- **Préférer `main` direct** pour le travail courant solo. La friction d'une branche doit être justifiée par un besoin de batching ou de revert facile.
 - **Toujours fournir les commandes `git` exactes** pour créer une branche — pas juste le nom
 - **Valider le nom** contre la convention avant de confirmer
 - **Rappeler le rebase** si la branche vit longtemps (> 3 jours sans merge)
+- **Si l'équipe grandit** (2+ devs actifs), revisiter : une branche `dev` peut redevenir utile comme zone d'intégration

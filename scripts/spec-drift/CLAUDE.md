@@ -42,7 +42,14 @@ Le schéma :
       "spec_file": "specs/Phase_D.md",
       "spec_line": 128,
       "src_file": "src/types/heading.ts",
-      "detail": "Property 'level' is missing in type..."
+      "detail": "Property 'level' is missing in type...",
+      "hints": {
+        "normative_language": ["MUST", "obligatoire"],
+        "api_surface": true,
+        "cross_spec_files": ["NIB-M-X.md"]
+      },
+      "direction": "block",
+      "direction_reason": "normative keywords near drift site: MUST, obligatoire; type exposed on public surface (src/index.ts); type declared in other specs: NIB-M-X.md"
     }
   ],
   "ignored_count": 1,
@@ -63,6 +70,45 @@ Le schéma :
 Le champ `id` est un hash synthétique stable :
 `sha256("spec-drift|" + name + "|" + spec_file + "|" + src_file).slice(0,16)`.
 Il permet à `loop-clean.sh` de détecter l'oscillation entre itérations.
+
+### Champs `hints` + `direction` (anti-dérive spec↔code)
+
+Chaque entrée `drift[]` inclut trois signaux déterministes calculés sur le
+contenu du repo au moment du scan, plus une synthèse `direction` que les
+consumers (fix-or-backlog) DOIVENT respecter.
+
+**`hints.normative_language`** : liste des mots-clés normatifs trouvés dans
+une fenêtre de ±10 lignes autour de `spec_line`. Patterns scannés :
+
+- RFC 2119 majuscules : `MUST`, `MUST NOT`, `SHALL`, `SHALL NOT`, `REQUIRED`
+- Français majuscules : `DOIT`, `DOIT PAS`, `NE DOIT PAS`, `DOIVENT`
+- Français case-insensitive : `obligatoire(s)`, `requis(e)(s)`, `explicitement`
+
+Liste non-vide = la spec assène une règle normative à proximité immédiate du
+drift. Aligner spec au code reviendrait à relaxer cette règle — le skill
+consumer DOIT router vers `design-queue.md` au lieu de `backlog.md`.
+
+**`hints.api_surface`** : `true` si le type drifté est exporté depuis
+`src/index.ts` (directement défini là, ou réexporté via `export { X }`,
+`export type { X }`, `export * from './m.js'`, `export type * from './m.js'`).
+La détection est 1-hop (pas de transitif). `true` = toute modif = breaking
+change = nouveau NIB requis, pas un item backlog.
+
+**`hints.cross_spec_files`** : paths relatifs des autres specs qui déclarent
+le même `name` dans un bloc ```typescript```. Non-vide = aligner un seul côté
+du drift crée une incohérence cross-spec — exiger un arbitrage humain.
+
+**`direction`** : dérivé déterministiquement des hints.
+- `"block"` : au moins un signal bloquant (≥1 hint non-vide). Consumer DOIT
+  router en design-queue, jamais en auto-fix.
+- `"ambiguous"` : aucun signal bloquant. Consumer peut procéder au flux
+  standard (backlog notable + fix) mais doit classifier explicitement la
+  direction du fix dans le commit message (`[code→spec]` vs
+  `[spec→code:completion]`).
+
+**`direction_reason`** : concaténation human-readable des signaux
+déclenchant le block, séparés par `; `. Utilisable tel quel dans
+`reason_why_design` lors du routage en design-queue.
 
 Le fichier est écrit même en cas de skip silencieux (pas de `specs/` ou
 `src/`) : dans ce cas `checked_count=0`, `drift=[]`, `ignored=[]`, `exit_code=0`.
@@ -113,7 +159,8 @@ consumer n'a pas moyen de distinguer "drift intentionnel" de "drift à résoudre
 6. Lance `ts.createProgram` en mode strict sur le fichier temporaire ; les diagnostics mentionnant un préfixe unique classent le type correspondant comme DRIFT.
 7. Parse `.spec-drift-ignore` (si présent) → pour chaque entrée, déplace le DRIFT matching vers status IGNORED avec la `reason` attachée.
 8. Imprime un rapport : `N OK, M DRIFT, K IGNORED`, puis liste les drifts (puis les ignored) avec le message tsc tronqué à 8 lignes.
-9. Nettoie le fichier temporaire (best-effort).
+9. Pour chaque DRIFT restant (non IGNORED), calcule `hints` (normative language ±10 lignes, api surface via `src/index.ts`, cross-spec via grep des autres `specs/*.md`) puis dérive `direction` ∈ {`block`, `ambiguous`}. Les champs sont sérialisés dans le rapport JSON.
+10. Nettoie le fichier temporaire (best-effort).
 
 ## Invariants
 

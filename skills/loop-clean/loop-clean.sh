@@ -429,10 +429,16 @@ cmd_commit_iter() {
 	local fb="$dir/fix-or-backlog.json"
 	[[ -f "$fb" ]] || { echo "SKIPPED_NO_CHANGES"; return 0; }
 
-	# Stage files touched by fix-or-backlog + backlog.md. Avoid -A (per CLAUDE.md).
+	# Stage files touched by fix-or-backlog + backlog.md + design-queue.md.
+	# design-queue.md must be staged whenever fix-or-backlog has routed items
+	# there (including gate-triggered escalations) — otherwise the commit title
+	# advertises "escalated N" but the diff does not contain the design-queue
+	# changes, leaving them unstaged and invisible to the reviewer.
+	# Avoid -A (per CLAUDE.md).
 	local files
 	files=$(jq -r '[.fix_now_applied[]?.file, .fix_now_applied[]?.files_touched[]?] | unique | .[]' "$fb" 2>/dev/null)
 	[[ -f backlog.md ]] && git add backlog.md 2>/dev/null || true
+	[[ -f design-queue.md ]] && git add design-queue.md 2>/dev/null || true
 	while IFS= read -r f; do
 		[[ -n "$f" && -e "$f" ]] && git add "$f" 2>/dev/null || true
 	done <<< "$files"
@@ -448,7 +454,39 @@ cmd_commit_iter() {
 	escalated_count=$(jq -r '.escalated // [] | length' "$fb")
 	backlog_count=$(jq -r '.backlog_added // [] | length' "$fb")
 
+	# Spec-drift direction breakdown. Counts applied spec-drift fixes by
+	# direction + escalations triggered specifically by the direction-block
+	# gate (spec-drift-scoped, unambiguous attribution). The other gates
+	# (single-layer, no-relaxation, api-surface) can fire on findings from
+	# any source, so they are tracked separately in gate_other_count.
+	# All counts are deterministic from fields emitted by fix-or-backlog.
+	local sd_applied_count sd_code_to_spec sd_spec_to_code sd_block_count gate_other_count
+	sd_applied_count=$(jq -r '[.fix_now_applied // [] | .[] | select(.source == "spec-drift")] | length' "$fb")
+	sd_code_to_spec=$(jq -r '[.fix_now_applied // [] | .[] | select(.source == "spec-drift" and .direction == "code→spec")] | length' "$fb")
+	sd_spec_to_code=$(jq -r '[.fix_now_applied // [] | .[] | select(.source == "spec-drift" and .direction == "spec→code:completion")] | length' "$fb")
+	sd_block_count=$(jq -r '[.design_queue_added // [] | .[] | select(.gate_triggered == "direction-block")] | length' "$fb")
+	gate_other_count=$(jq -r '[.design_queue_added // [] | .[] | select(.gate_triggered != null and .gate_triggered != "direction-block")] | length' "$fb")
+
 	local title="chore(loop-clean): iter $n — $applied_count applied, $escalated_count escalated, $backlog_count backlog"
+
+	# Build spec-drift breakdown block for the commit body (NOT the title).
+	# Keeping this in the body avoids titles > 72 chars (conventional limit)
+	# while preserving full visibility via `git show` / `git log --format=%B`.
+	local sd_breakdown_block=""
+	if [[ "$sd_applied_count" -gt 0 || "$sd_block_count" -gt 0 || "$gate_other_count" -gt 0 ]]; then
+		local sd_lines=""
+		[[ "$sd_code_to_spec" -gt 0 ]] && sd_lines+="  - code→spec: $sd_code_to_spec"$'\n'
+		[[ "$sd_spec_to_code" -gt 0 ]] && sd_lines+="  - spec→code:completion: $sd_spec_to_code"$'\n'
+		[[ "$sd_block_count" -gt 0 ]] && sd_lines+="  - escalated (direction-block): $sd_block_count"$'\n'
+		[[ "$gate_other_count" -gt 0 ]] && sd_lines+="  - escalated (other gates: single-layer / no-relaxation / api-surface): $gate_other_count"$'\n'
+		# Guard: only emit the block header if any line was populated. Avoids
+		# an empty "Spec-drift direction breakdown:" header when the JSON
+		# reports a spec-drift applied fix but with direction=null/absent.
+		if [[ -n "$sd_lines" ]]; then
+			sd_breakdown_block=$'\n\nSpec-drift direction breakdown:\n'
+			sd_breakdown_block+="${sd_lines%$'\n'}"
+		fi
+	fi
 
 	local applied_block="" escalated_block="" notes_block=""
 	if [[ "$applied_count" -gt 0 ]]; then
@@ -471,7 +509,7 @@ cmd_commit_iter() {
 	fi
 
 	local metadata="Session: $SESSION_ID | RUN_DIR: $RUN_DIR | iter-$(printf '%03d' "$n")"
-	local body="${metadata}${applied_block}${escalated_block}${notes_block}"
+	local body="${metadata}${sd_breakdown_block}${applied_block}${escalated_block}${notes_block}"
 
 	local author_name="${GIT_AUTHOR_NAME:-Claude Loop-Clean}"
 	local author_email="${GIT_AUTHOR_EMAIL:-${CLAUDE_COMMITTER_EMAIL:-claude-loop-clean@anthropic.com}}"

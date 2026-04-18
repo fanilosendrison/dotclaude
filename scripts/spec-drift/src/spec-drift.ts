@@ -79,6 +79,271 @@ export interface IgnoreEntry {
 	reason: string;
 }
 
+// Per-drift signals that justify blocking auto-fix and escalating to
+// design-queue. All deterministic, computed from file contents.
+export interface DriftHints {
+	// Normative keywords (RFC 2119 uppercase + French "obligatoire"/"DOIT"
+	// class) found within the scan window around the drift site in the spec.
+	// Non-empty list = spec asserts a hard rule near the drift, so aligning
+	// spec to code would relax a normative rule.
+	normative_language: string[];
+	// True when the drifted type is exported from src/index.ts (directly
+	// defined there or re-exported via `export { ... } from` / `export *`).
+	// A change to a type on the public surface is a breaking change and
+	// requires a new NIB, not a backlog item.
+	api_surface: boolean;
+	// Relative paths (within specsDir) of other spec files that also declare
+	// the same type name in a ```typescript``` block. Aligning one side of
+	// the drift would create cross-spec incoherence.
+	cross_spec_files: string[];
+}
+
+export type DriftDirection = "block" | "ambiguous";
+
+// Normative keyword patterns. Uppercase variants (RFC 2119) are matched
+// case-sensitively: MUST, SHALL, REQUIRED in prose is a strong signal, the
+// lowercase "must" / "required" would trigger on non-normative prose. The
+// French equivalents are matched case-insensitively because standard
+// French prose capitalizes them sentence-initially.
+const NORMATIVE_PATTERNS: { re: RegExp; tag: string }[] = [
+	{ re: /\bMUST NOT\b/, tag: "MUST NOT" },
+	{ re: /\bMUST\b/, tag: "MUST" },
+	{ re: /\bSHALL NOT\b/, tag: "SHALL NOT" },
+	{ re: /\bSHALL\b/, tag: "SHALL" },
+	{ re: /\bREQUIRED\b/, tag: "REQUIRED" },
+	{ re: /\bNE DOIT PAS\b/, tag: "NE DOIT PAS" },
+	{ re: /\bDOIT PAS\b/, tag: "DOIT PAS" },
+	{ re: /\bDOIVENT\b/, tag: "DOIVENT" },
+	{ re: /\bDOIT\b/, tag: "DOIT" },
+	{ re: /\bobligatoires?\b/i, tag: "obligatoire" },
+	{ re: /\brequise?s?\b/i, tag: "requis" },
+	{ re: /\bexplicitement\b/i, tag: "explicitement" },
+];
+
+// Pure function: scan an already-loaded spec text for normative keywords
+// within `radius` lines of `specLine` (1-based). Used by
+// scanNormativeLanguage (file-based wrapper) and by writeJsonReport
+// (which pre-loads spec content once per file to avoid re-reading the
+// same spec multiple times when it contains multiple drifts).
+function scanNormativeInText(
+	text: string,
+	specLine: number,
+	radius: number,
+): string[] {
+	const lines = text.split(/\r?\n/);
+	const start = Math.max(0, specLine - 1 - radius);
+	const end = Math.min(lines.length, specLine - 1 + radius + 1);
+	const window = lines.slice(start, end).join("\n");
+	const matches: string[] = [];
+	for (const { re, tag } of NORMATIVE_PATTERNS) {
+		if (re.test(window) && !matches.includes(tag)) matches.push(tag);
+	}
+	// Hierarchical dedup: when a more specific negated form matched, drop
+	// the redundant bare positive form. "MUST NOT X" text always also
+	// matches `/\bMUST\b/`, but reporting both inflates the hint count
+	// and confuses downstream consumers.
+	const hierarchy: Array<[string, string[]]> = [
+		["MUST NOT", ["MUST"]],
+		["SHALL NOT", ["SHALL"]],
+		["NE DOIT PAS", ["DOIT PAS", "DOIT"]],
+		["DOIT PAS", ["DOIT"]],
+	];
+	for (const [specific, redundants] of hierarchy) {
+		if (!matches.includes(specific)) continue;
+		for (const r of redundants) {
+			const idx = matches.indexOf(r);
+			if (idx !== -1) matches.splice(idx, 1);
+		}
+	}
+	return matches;
+}
+
+// Scan the spec file for normative keywords within `radius` lines of
+// `specLine` (1-based). Returns the deduplicated list of matched tags
+// (order: pattern order above). The anchor line is the opening ``` fence
+// of the block containing the drifted type, so the window naturally covers
+// both the block and the prose introducing it.
+export function scanNormativeLanguage(
+	specFile: string,
+	specLine: number,
+	radius = 10,
+): string[] {
+	return scanNormativeInText(readFileSync(specFile, "utf8"), specLine, radius);
+}
+
+// Return true iff the type `name` from `srcFile` is exposed on the public
+// surface — i.e., reachable from `src/index.ts`. Recognizes:
+//   1. The drift site is itself src/index.ts.
+//   2. Named re-exports: `export { X }`, `export type { X }`, including
+//      lists of names separated by commas (with optional aliases).
+//   3. Star re-exports: `export * from './module.js'` or
+//      `export type * from './module.js'` where the module's resolved path
+//      equals `srcFile`.
+// Stops at 1-hop depth: transitive re-exports (index.ts -> barrel.ts ->
+// leaf.ts) are not followed. First-level public APIs are what matter here;
+// a type that's buried under N levels of re-export is unusual and deserves
+// explicit review anyway.
+// Strip `//` line comments and `/* ... */` block comments from a TypeScript
+// source. Used to avoid reporting `// export { Foo } from './m.js'` as a
+// real re-export. Not a full parser — handles the common cases and is
+// conservative: if a comment boundary straddles something clever (e.g.,
+// a string literal containing `//`), the function may over-strip, but
+// over-stripping only causes false negatives (type not flagged as public),
+// which is strictly safer than the previous false positive.
+function stripTsComments(text: string): string {
+	// Block comments first so `// inside /* ... */` isn't double-stripped.
+	let out = text.replace(/\/\*[\s\S]*?\*\//g, "");
+	// Line comments: strip from `//` to end-of-line.
+	out = out.replace(/\/\/[^\n]*/g, "");
+	return out;
+}
+
+// Pure function: test whether `name` is reachable from the given
+// (already-loaded, already-comment-stripped) index.ts content. Caller
+// provides `indexPath` for resolving relative `from './m.js'` imports.
+// If `indexContent === null`, the index file does not exist and the
+// function returns false unconditionally.
+function isApiSurfaceInContent(
+	indexContent: string | null,
+	indexPath: string,
+	srcFile: string,
+	name: string,
+): boolean {
+	if (indexContent === null) return false;
+	if (resolve(srcFile) === resolve(indexPath)) return true;
+	// Named re-exports with a `from` clause. Only count a match if the
+	// resolved module path equals srcFile.
+	const namedWithFromRe =
+		/export\s+(?:type\s+)?\{([^}]*)\}\s+from\s+["']([^"']+)["']/g;
+	for (;;) {
+		const m = namedWithFromRe.exec(indexContent);
+		if (m === null) break;
+		const inside = m[1];
+		const modPath = m[2];
+		const noExt = modPath.replace(/\.js$/, "");
+		const resolved = resolve(dirname(indexPath), `${noExt}.ts`);
+		if (resolve(srcFile) !== resolved) continue;
+		for (const raw of inside.split(",")) {
+			const local = raw
+				.trim()
+				.split(/\s+as\s+/)[0]
+				.trim();
+			if (local === name) return true;
+		}
+	}
+	// Star re-exports.
+	const starRe = /export\s+(?:type\s+)?\*\s+from\s+["']([^"']+)["']/g;
+	for (;;) {
+		const m = starRe.exec(indexContent);
+		if (m === null) break;
+		const noExt = m[1].replace(/\.js$/, "");
+		const resolved = resolve(dirname(indexPath), `${noExt}.ts`);
+		if (resolve(srcFile) === resolved) return true;
+	}
+	return false;
+}
+
+export function isApiSurface(
+	srcFile: string,
+	name: string,
+	srcDir: string,
+): boolean {
+	const indexPath = join(srcDir, "index.ts");
+	if (!existsSync(indexPath)) return false;
+	const content = stripTsComments(readFileSync(indexPath, "utf8"));
+	return isApiSurfaceInContent(content, indexPath, srcFile, name);
+}
+
+// Return the list of OTHER spec files (relative paths within specsDir)
+// that declare the same type name in a ```typescript``` block. Empty list
+// if the type is defined in exactly one spec. Used to flag drifts whose
+// alignment would create cross-spec incoherence.
+export function findCrossSpecs(
+	name: string,
+	currentSpecFile: string,
+	specsDir: string,
+): string[] {
+	const index = buildCrossSpecIndex(specsDir);
+	const currentAbs = resolve(currentSpecFile);
+	const entries = index.get(name) ?? [];
+	return entries
+		.filter((abs) => abs !== currentAbs)
+		.map((abs) => relative(specsDir, abs));
+}
+
+// Build an index: type name → list of absolute spec file paths that
+// declare it in a ```typescript``` block. Computed once per scan so that
+// D drift entries don't trigger D*S file reads.
+//
+// Returned map uses absolute paths (not relative) so the caller can
+// filter out the drift's own spec file robustly across symlink / /private
+// macOS aliases. Callers re-relativize at emit time.
+function buildCrossSpecIndex(specsDir: string): Map<string, string[]> {
+	const index = new Map<string, string[]>();
+	const blockRegex = /```(?:typescript|ts)[^\n]*\n([\s\S]*?)```/g;
+	for (const f of readdirSync(specsDir)) {
+		if (!f.endsWith(".md")) continue;
+		const abs = resolve(join(specsDir, f));
+		const text = readFileSync(abs, "utf8");
+		const seenHere = new Set<string>();
+		blockRegex.lastIndex = 0;
+		for (;;) {
+			const match = blockRegex.exec(text);
+			if (match === null) break;
+			const body = match[1];
+			if (body.includes(SPEC_ONLY_MARKER)) continue;
+			// Extract every `interface Foo` / `type Foo` declaration in the
+			// block. One pass over the block's AST via the TS parser would
+			// be more accurate, but the regex is good enough here: any top-
+			// level declaration in a typescript block begins with one of
+			// these keywords followed by the identifier.
+			const declRe = /\b(?:interface|type)\s+([A-Za-z_$][\w$]*)\b/g;
+			for (;;) {
+				const d = declRe.exec(body);
+				if (d === null) break;
+				seenHere.add(d[1]);
+			}
+		}
+		for (const name of seenHere) {
+			const existing = index.get(name);
+			if (existing) existing.push(abs);
+			else index.set(name, [abs]);
+		}
+	}
+	return index;
+}
+
+// Derive the drift direction from hints. Any non-empty hint triggers
+// `block`; no hints => `ambiguous`. The reason is a concatenation of all
+// triggering signals, separated by "; ". Callers must serialize this into
+// the JSON report so downstream skills can route without re-computing.
+export function computeDriftDirection(hints: DriftHints): {
+	direction: DriftDirection;
+	reason: string;
+} {
+	const reasons: string[] = [];
+	if (hints.normative_language.length > 0) {
+		reasons.push(
+			`normative keywords near drift site: ${hints.normative_language.join(", ")}`,
+		);
+	}
+	if (hints.api_surface) {
+		reasons.push("type exposed on public surface (src/index.ts)");
+	}
+	if (hints.cross_spec_files.length > 0) {
+		reasons.push(
+			`type declared in other specs: ${hints.cross_spec_files.join(", ")}`,
+		);
+	}
+	if (reasons.length > 0) {
+		return { direction: "block", reason: reasons.join("; ") };
+	}
+	return {
+		direction: "ambiguous",
+		reason: "no blocking signal — direction must be classified by consumer",
+	};
+}
+
 // Parse a .spec-drift-ignore file. Returns [] if the file doesn't exist.
 // Throws if any non-blank, non-comment line is malformed — an ignore file
 // without a justification is a silent failure mode the skill explicitly
@@ -464,27 +729,66 @@ function driftId(name: string, specFile: string, srcFile: string): string {
 	return createHash("sha256").update(input).digest("hex").slice(0, 16);
 }
 
-function writeJsonReport(
+export function writeJsonReport(
 	checked: CheckedDecl[],
 	missing: MissingDecl[],
 	exitCode: number,
 	jsonPath: string,
 	root: string,
+	specsDir: string,
+	srcDir: string,
 ): void {
-	const drift = checked
-		.filter((c) => c.status === "DRIFT")
-		.map((c) => {
-			const specFileRel = relative(root, c.specFile);
-			const srcFileRel = relative(root, c.srcFile);
-			return {
-				id: driftId(c.name, specFileRel, srcFileRel),
-				name: c.name,
-				spec_file: specFileRel,
-				spec_line: c.line,
-				src_file: srcFileRel,
-				detail: c.detail ?? "",
-			};
-		});
+	// Pre-load content once. Without this, each drift entry re-reads every
+	// spec via findCrossSpecs (O(D*S) file reads) and re-reads
+	// src/index.ts via isApiSurface (O(D) reads). Pre-loading drops us to
+	// O(S + 1) reads per scan.
+	const driftEntries = checked.filter((c) => c.status === "DRIFT");
+	const specContentCache = new Map<string, string>();
+	for (const c of driftEntries) {
+		if (!specContentCache.has(c.specFile)) {
+			specContentCache.set(c.specFile, readFileSync(c.specFile, "utf8"));
+		}
+	}
+	const crossSpecIndex =
+		driftEntries.length > 0
+			? buildCrossSpecIndex(specsDir)
+			: new Map<string, string[]>();
+	const indexPath = join(srcDir, "index.ts");
+	const indexContent = existsSync(indexPath)
+		? stripTsComments(readFileSync(indexPath, "utf8"))
+		: null;
+
+	const drift = driftEntries.map((c) => {
+		const specFileRel = relative(root, c.specFile);
+		const srcFileRel = relative(root, c.srcFile);
+		const specText = specContentCache.get(c.specFile) ?? "";
+		const currentAbs = resolve(c.specFile);
+		const crossAbs = crossSpecIndex.get(c.name) ?? [];
+		const hints: DriftHints = {
+			normative_language: scanNormativeInText(specText, c.line, 10),
+			api_surface: isApiSurfaceInContent(
+				indexContent,
+				indexPath,
+				c.srcFile,
+				c.name,
+			),
+			cross_spec_files: crossAbs
+				.filter((abs) => abs !== currentAbs)
+				.map((abs) => relative(specsDir, abs)),
+		};
+		const { direction, reason } = computeDriftDirection(hints);
+		return {
+			id: driftId(c.name, specFileRel, srcFileRel),
+			name: c.name,
+			spec_file: specFileRel,
+			spec_line: c.line,
+			src_file: srcFileRel,
+			detail: c.detail ?? "",
+			hints,
+			direction,
+			direction_reason: reason,
+		};
+	});
 	const ignored = checked
 		.filter((c) => c.status === "IGNORED")
 		.map((c) => {
@@ -525,7 +829,15 @@ function main(): void {
 			`spec-drift: not a spec-driven project (missing ${missing.join(", ")}), skipping.`,
 		);
 		if (args.jsonPath) {
-			writeJsonReport([], [], 0, args.jsonPath, cwd);
+			writeJsonReport(
+				[],
+				[],
+				0,
+				args.jsonPath,
+				cwd,
+				args.specsDir,
+				args.srcDir,
+			);
 		}
 		process.exit(0);
 	}
@@ -538,7 +850,15 @@ function main(): void {
 	applyIgnores(checked, ignoreEntries, cwd);
 	const exitCode = printReport(checked, missing, args.showMissing, cwd);
 	if (args.jsonPath) {
-		writeJsonReport(checked, missing, exitCode, args.jsonPath, cwd);
+		writeJsonReport(
+			checked,
+			missing,
+			exitCode,
+			args.jsonPath,
+			cwd,
+			args.specsDir,
+			args.srcDir,
+		);
 	}
 	process.exit(exitCode);
 }
