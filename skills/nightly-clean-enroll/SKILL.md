@@ -53,7 +53,7 @@ bash ~/.claude/skills/nightly-clean-enroll/enroll.sh init
 ```
 
 Par defaut :
-- cron 02:03 UTC (utilise `--cron "MIN HOUR * * *"` pour override)
+- cron 00:00 UTC (utilise `--cron "MIN HOUR * * *"` pour override)
 - branche `claude/nightly-clean` comme accumulator
 - ref `main` du callable workflow
 
@@ -61,7 +61,7 @@ Sortie attendue :
 
 ```
 ==> Writing .github/workflows/nightly-clean.yml
-  ✓ caller workflow written (cron: 3 2 * * *)
+  ✓ caller workflow written (cron: 0 0 * * *)
 ==> Updating .gitignore
   ✓ .gitignore entry for .claude/ already present (or added)
 

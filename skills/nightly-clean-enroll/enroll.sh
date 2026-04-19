@@ -19,7 +19,7 @@ readonly CALLABLE_PATH=".github/workflows/nightly-clean-callable.yml"
 readonly CALLER_FILE=".github/workflows/nightly-clean.yml"
 readonly GITIGNORE=".gitignore"
 
-DEFAULT_CRON="3 2 * * *"
+DEFAULT_CRON="0 0 * * *"
 DEFAULT_REF="main"
 
 # --- Helpers ---
