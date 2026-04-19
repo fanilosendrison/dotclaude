@@ -124,7 +124,14 @@ Next steps:
   3. Set the secret (use printf to avoid trailing newline):
        printf '%s' '<PASTE_TOKEN>' | gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo $slug
 
-  4. Validate with a manual trigger:
+  4. Enable GHA to create PRs on this repo (default is OFF for user-owned repos;
+     the post step WILL FAIL with "GitHub Actions is not permitted to create or
+     approve pull requests" without this):
+       gh api -X PUT repos/$slug/actions/permissions/workflow \\
+         -f default_workflow_permissions=read \\
+         -F can_approve_pull_request_reviews=true
+
+  5. Validate with a manual trigger:
        gh workflow run nightly-clean.yml --repo $slug
      Check the Actions tab — expect a PR on claude/nightly-clean after ~15-30 min.
 
