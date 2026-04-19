@@ -18,11 +18,6 @@ dotclaude/
 └── README.md
 ```
 
-## Branches
-
-- `main` — stable, consumed by the default `cc-ci` callable (`dotclaude_ref: main`)
-- `dev` — integration branch for WIP changes
-
 ## NOT mirrored
 
 These stay local-only (machine-specific, credentials, session data) :
