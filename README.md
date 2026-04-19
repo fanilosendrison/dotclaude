@@ -1,31 +1,27 @@
-# cc-skills
+# dotclaude
 
-Personal Claude Code vendor repo — mirror of `~/.claude/{skills,agents,scripts}/`.
+Personal Claude Code vendor repo — mirror of `~/.claude/{skills,agents,scripts,helpers}/`.
 
 ## Purpose
 
-1. **Multi-machine portability** : clone + symlink on any Mac to get the same Claude Code setup.
-2. **Nightly-clean Routines** : cloud-side cloned by `routine-setup.sh` at each run so the cloud env has access to orchestrator agents, cleanup skills, and helper scripts.
+1. **Multi-machine portability** : clone on any Mac to get the same Claude Code setup.
+2. **Nightly-clean automation** : cloned into `.claude/` by the [`cc-ci`](https://github.com/fanilosendrison/cc-ci) callable workflow at each nightly run, so the cloud runner has access to the same skills, agents, and helpers as local.
 
 ## Contents
 
 ```
-cc-skills/
+dotclaude/
 ├── skills/      # Claude Code skills (~/.claude/skills/)
 ├── agents/      # Sub-agents (~/.claude/agents/)
 ├── scripts/     # Bash/TS helpers (~/.claude/scripts/)
+├── helpers/     # Shared prompt snippets
 └── README.md
 ```
 
-## Sync from local `~/.claude/`
+## Branches
 
-Run from anywhere :
-
-```bash
-bash ~/.claude/skills/nightly-clean-enroll/enroll.sh sync-vendor
-```
-
-Excludes : `node_modules/`, `__pycache__/`, `*.log`, runtime state (`statusline/data/`).
+- `main` — stable, consumed by the default `cc-ci` callable (`dotclaude_ref: main`)
+- `dev` — integration branch for WIP changes
 
 ## NOT mirrored
 
