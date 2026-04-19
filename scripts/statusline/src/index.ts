@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { defaultConfig, type StatuslineConfig } from "./lib/config";
 import { getContextData } from "./lib/context";
 import {
@@ -99,6 +99,7 @@ async function main() {
 		const input: HookInput = await Bun.stdin.json();
 
 		// Save last payload for debugging
+		await mkdir(dirname(LAST_PAYLOAD_PATH), { recursive: true });
 		await writeFile(LAST_PAYLOAD_PATH, JSON.stringify(input, null, 2));
 
 		const config = await loadConfig();
