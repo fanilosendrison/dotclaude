@@ -19,7 +19,7 @@ Deux types de champs à remplir :
 **Description :**
 
 Exemples :
-- yada-core — Moteur d'exécution contraint pour le paradigme VAG
+- my-service — Backend HTTP pour l'app X
 - budget-tracker — API de gestion de budgets personnels
 
 **Propriétés fondamentales** (guident tous les arbitrages, voir `~/.claude/CLAUDE.md` §Arbitrages) :
