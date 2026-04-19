@@ -1,0 +1,20 @@
+name: claude-project-onboarder
+version: "0.4.0"
+dependencies:
+  skills:
+    - repo-indexer
+    - stack-evaluator
+    - libs-evaluator
+    - claude-md-creator
+    - git-commits-push
+    - readme-writer
+steps:
+  - file: steps/01-prerequisites-check.md
+  - file: steps/02-repo-index.md
+  - file: steps/03-stack-evaluate.md
+  - file: steps/04-libs-evaluate.md
+  - file: steps/05-git-preflight.md
+  - file: steps/06-claude-md-generate.md
+  - file: steps/07-environment-setup.md
+  - file: steps/08-readme-generate.md
+  - file: steps/09-commit-setup.md
