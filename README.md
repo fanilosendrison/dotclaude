@@ -18,6 +18,14 @@ dotclaude/
 └── README.md
 ```
 
+## Status
+
+Personal workspace — published for CI/CD reuse, not maintained as a project.
+
+- No support, no issues triage, no PR review guaranteed.
+- Patterns and skill APIs may change without notice.
+- Skills may reference private instructions from `~/.claude/CLAUDE.md` (not included) and may not work standalone.
+
 ## NOT mirrored
 
 These stay local-only (machine-specific, credentials, session data) :
@@ -31,4 +39,4 @@ These stay local-only (machine-specific, credentials, session data) :
 
 ## License
 
-Personal use only.
+MIT — free to fork, adapt, reuse. No warranty. See [LICENSE](LICENSE).
