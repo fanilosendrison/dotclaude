@@ -457,6 +457,55 @@ cmd_mark_done() {
 	echo "backlog-crush: marked $marked item(s) as done." >&2
 }
 
+# Archive every resolved "- [x] " line in backlog.md to backlog.archive.md.
+# Silent no-op if backlog.md is absent or no resolved item is present. Atomic
+# via tmp file + mv. Emits the archived count to stdout (caller-friendly) and
+# a human-readable message to stderr. Reuses the "# Backlog archive" format
+# produced by loop-clean's sweep-backlog (single shared archive file).
+cmd_sweep_resolved() {
+	local src="$BACKLOG_FILE"
+	local dst="backlog.archive.md"
+
+	[[ -f "$src" ]] || { echo "0"; return 0; }
+
+	local tmp_live tmp_arch
+	tmp_live=$(mktemp)
+	tmp_arch=$(mktemp)
+	local archived=0 kept=0
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if [[ "$line" =~ ^[[:space:]]*-[[:space:]]+\[x\][[:space:]] ]]; then
+			echo "$line" >> "$tmp_arch"
+			archived=$((archived + 1))
+			continue
+		fi
+		echo "$line" >> "$tmp_live"
+		kept=$((kept + 1))
+	done < "$src"
+
+	if [[ "$archived" -eq 0 ]]; then
+		rm -f "$tmp_live" "$tmp_arch"
+		echo "0"
+		return 0
+	fi
+
+	if [[ ! -f "$dst" ]]; then
+		echo "# Backlog archive" > "$dst"
+		echo "" >> "$dst"
+		echo "Items migrated from backlog.md after resolution." >> "$dst"
+		echo "" >> "$dst"
+	fi
+	echo "" >> "$dst"
+	echo "## Crush sweep $(date -u +%Y-%m-%d) — $archived items (session $SESSION_ID)" >> "$dst"
+	cat "$tmp_arch" >> "$dst"
+
+	mv "$tmp_live" "$src"
+	rm -f "$tmp_arch"
+
+	echo "backlog-crush: archived $archived resolved item(s) to $dst (kept $kept lines in $src)" >&2
+	echo "$archived"
+}
+
 cmd_decide() {
 	_require_jq
 	local n="$1"
@@ -545,6 +594,9 @@ cmd_finalize() {
 	local initial
 	initial=$(cat "$RUN_DIR/initial-pending" 2>/dev/null || echo "?")
 
+	local archived
+	archived=$(cmd_sweep_resolved)
+
 	cat <<EOF
 # backlog-crush report
 
@@ -554,6 +606,7 @@ cmd_finalize() {
 - Final action: $final_action
 - Pending (critical+major) at start: $initial
 - Pending (critical+major) at end: $final_pending
+- Resolved items archived to backlog.archive.md: $archived
 
 Per-cycle decisions: $RUN_DIR/cycle-*/decision.json
 EOF
@@ -580,6 +633,7 @@ Usage:
   backlog-crush.sh annotate-blocked               # legacy: add "(blocked: ...)" marker in place
   backlog-crush.sh escalate-stuck                 # move items with skip_count >= threshold to design-queue.md (preferred at EXIT_STABLE)
   backlog-crush.sh migrate-blocked                # one-shot: migrate legacy "(blocked: ...)" items from backlog.md to design-queue.md
+  backlog-crush.sh sweep-resolved                 # archive every "- [x] " item from backlog.md to backlog.archive.md (auto-invoked by finalize)
   backlog-crush.sh decide <N>
   backlog-crush.sh finalize
   backlog-crush.sh cleanup
@@ -599,6 +653,7 @@ main() {
 		annotate-blocked) cmd_annotate_blocked ;;
 		escalate-stuck) cmd_escalate_stuck ;;
 		migrate-blocked) cmd_migrate_blocked ;;
+		sweep-resolved) cmd_sweep_resolved ;;
 		decide)
 			if [[ $# -lt 1 ]]; then usage; fi
 			cmd_decide "$1"

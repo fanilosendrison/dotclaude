@@ -159,7 +159,7 @@ Stdout = rapport markdown. **C'est ce rapport que tu retournes à l'appelant**, 
 1. **Priorité stricte** : un critical repousse les majors. Toujours.
 2. **Un critical à la fois** : ne jamais batch des criticals.
 3. **Skip silencieux si contexte perdu** : les sub-agents `backlog-fix` le font naturellement — respecter leurs `fixes_skipped[]`.
-4. **Ne pas modifier le format du backlog** : uniquement flipper `[ ]` → `[x]` via `mark-done`. Pas de réécriture de description/date/source. Pas d'insertion, pas de reordering.
+4. **Ne pas modifier le format du backlog** : flipper `[ ]` → `[x]` via `mark-done` pendant la boucle. `finalize` archive ensuite automatiquement tous les `[x]` vers `backlog.archive.md` (via `sweep-resolved`). Pas de réécriture de description/date/source. Pas d'insertion, pas de reordering.
 5. **Ne pas court-circuiter `/loop-clean`** entre cycles : c'est la seule façon de capturer les régressions.
 6. **Ne pas passer d'override `model`/`effort`** dans les Agent() — laisser le frontmatter décider.
 
