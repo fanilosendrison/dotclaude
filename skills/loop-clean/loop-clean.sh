@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # loop-clean.sh — Deterministic orchestrator for the post-implementation
-# workflow: senior-review → dedup-codebase → spec-drift → fix-or-backlog,
-# iterated until CLEAN / OSCILLATION / CEILING.
+# workflow: coding-standards → senior-review → dedup-codebase → spec-drift
+# → fix-or-backlog, iterated until CLEAN / OSCILLATION / CEILING.
 #
 # This script is pure bash: it parses JSON produced by the skills, decides
 # which iteration to run next, and never performs semantic work. All
@@ -204,6 +204,7 @@ LOOP_CLEAN_ITERATION="$n"
 LOOP_CLEAN_RUN_DIR="$RUN_DIR"
 LOOP_CLEAN_BASE_SHA="$(cat "$RUN_DIR/base-sha" 2>/dev/null || echo "")"
 # Per-step JSON output targets:
+LOOP_CLEAN_JSON_OUT_CODING_STANDARDS="$dir/coding-standards.json"
 LOOP_CLEAN_JSON_OUT_SENIOR_REVIEW="$dir/senior-review.json"
 LOOP_CLEAN_JSON_OUT_DEDUP_CODEBASE="$dir/dedup-codebase.json"
 LOOP_CLEAN_JSON_OUT_SPEC_DRIFT="$dir/spec-drift.json"
@@ -528,19 +529,21 @@ cmd_decide() {
 	local dir
 	dir="$(_iter_dir "$n")"
 
+	local cs="$dir/coding-standards.json"
 	local sr="$dir/senior-review.json"
 	local dc="$dir/dedup-codebase.json"
 	local sd="$dir/spec-drift.json"
 	local rg="$dir/runtime-gate.json"
 
-	# --- Total findings across the four sources for this iteration.
+	# --- Total findings across the five sources for this iteration.
 	# runtime-gate contributes 0 or 1 finding (synthetic critical on test fail).
-	local sr_count dc_count sd_count rg_count total
+	local cs_count sr_count dc_count sd_count rg_count total
+	cs_count=$(_count_findings "$cs")
 	sr_count=$(_count_findings "$sr")
 	dc_count=$(_count_findings "$dc")
 	sd_count=$(_count_drift "$sd")
 	rg_count=$(_count_findings "$rg")
-	total=$((sr_count + dc_count + sd_count + rg_count))
+	total=$((cs_count + sr_count + dc_count + sd_count + rg_count))
 
 	# --- Oscillation hash: sorted concatenation of normalized signatures.
 	# Uses _sigs_from_findings instead of _ids_from_findings to immunize
@@ -550,6 +553,7 @@ cmd_decide() {
 	local hash
 	hash=$(
 		{
+			_sigs_from_findings "$cs"
 			_sigs_from_findings "$sr"
 			_sigs_from_findings "$dc"
 			_sigs_from_drift "$sd"

@@ -126,17 +126,26 @@ la regle de blocage :
 
 ## Axes (labels canoniques)
 
-Les sub-agents emettent l'un de ces onze labels dans le champ `axis` du JSON.
-L'orchestrateur les propage tels quels. La description detaillee de chaque axe
-vit dans `senior-reviewer-file.md`.
+Les sub-agents emettent l'un de ces douze labels dans le champ `axis` du JSON.
+L'orchestrateur les propage tels quels. La description detaillee de chaque axe,
+leur regroupement en phases d'execution, et la procedure d'audit per-file
+vivent dans `senior-reviewer-file.md`.
 
-`cheat-detection`, `tests-themselves`, `edge-cases`, `error-paths`,
-`cross-ref-impact`, `dead-code-weak-typing`, `naming-readability`,
-`performance`, `api-surface`, `subtle-regression`, `spec-drift-direction`.
+`cheat-detection`, `edge-cases`, `subtle-regression` (phase 1 — Correctness) ;
+`error-paths`, `performance`, `substrate-resilience`, `input-contract-boundary`
+(phase 2 — Robustness) ;
+`tests-substance` (phase 3 — Tests) ;
+`cross-ref-impact`, `naming-readability`, `api-surface`, `spec-drift-direction`
+(phase 4 — Interface & coherence).
 
-Si un ou plusieurs findings remontent sur `dead-code-weak-typing`, l'orchestrateur
-ajoute dans le rapport consolide : "Duplication/dead code detecte → lancer
-`/dedup-codebase` pour un audit complet du codebase."
+Les preoccupations suivantes ne sont PAS auditees par senior-review — elles
+sont couvertes par d'autres skills du pipeline `loop-clean` :
+
+- **Duplication / dead code / imports inutilises** → `dedup-codebase`.
+- **Weak typing / magic numbers / nommage stylistique / complexite cyclomatique** → `coding-standards` (mode audit).
+
+Si un sub-agent rencontre ces preoccupations, il **ne doit pas** emettre de
+finding — double-emission = bruit dans le pipeline.
 
 ---
 
@@ -157,7 +166,7 @@ rien ecrire (invocation standalone, comportement inchange).
     {
       "id": "string (16 hex chars)",
       "source": "senior-review",
-      "axis": "string (un des 11 labels canoniques)",
+      "axis": "string (un des 12 labels canoniques)",
       "severity": "critical" | "major" | "notable" | "minor" | "nit" | "design",
       "file": "string (chemin relatif repo)",
       "line_start": number | null,

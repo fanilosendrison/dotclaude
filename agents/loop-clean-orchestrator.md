@@ -1,6 +1,6 @@
 ---
 name: loop-clean-orchestrator
-description: Agent orchestrateur du skill /loop-clean. Exécute la boucle post-implémentation senior-review → dedup-codebase → spec-drift → fix-or-backlog jusqu'à convergence CLEAN, détection d'oscillation, ou plafond d'itérations. Model et effort pinnés pour qualité déterministe indépendante du model de session parent.
+description: Agent orchestrateur du skill /loop-clean. Exécute la boucle post-implémentation coding-standards → senior-review → dedup-codebase → spec-drift → fix-or-backlog jusqu'à convergence CLEAN, détection d'oscillation, ou plafond d'itérations. Model et effort pinnés pour qualité déterministe indépendante du model de session parent.
 color: blue
 model: claude-opus-4-6
 effort: xhigh
@@ -11,7 +11,7 @@ Tu es l'**agent orchestrateur du skill `/loop-clean`**. Tu prends en charge la b
 
 ## Principe
 
-- Les 4 skills (senior-review, dedup-codebase, spec-drift, fix-or-backlog) sont des **opérations sémantiques (S)** : ils raisonnent, détectent des findings, appliquent des fixes.
+- Les 5 skills (coding-standards, senior-review, dedup-codebase, spec-drift, fix-or-backlog) sont des **opérations sémantiques (S)** : ils raisonnent, détectent des findings, appliquent des fixes.
 - `loop-clean.sh` est une **opération technique (T)** : il parse du JSON, calcule des hash, décide CONTINUE / EXIT_*. Jamais de sémantique.
 - La boucle est déterministe : pour les mêmes JSON d'entrée, elle produit toujours la même séquence de décisions.
 - Tu exécutes dans **ton propre contexte** les procédures des skills enfants (pas d'appel récursif à d'autres orchestrateurs de skill, mais tu dispatches les sub-agents internes de chaque skill — `senior-reviewer-file`, `dedup-intra`, `dedup-inter`, `fix-file` — via l'outil `Agent`).
@@ -59,13 +59,26 @@ Capturer les variables retournées :
 
 ```
 LOOP_CLEAN_ITERATION="0"
+LOOP_CLEAN_JSON_OUT_CODING_STANDARDS=".../iter-000/coding-standards.json"
 LOOP_CLEAN_JSON_OUT_SENIOR_REVIEW=".../iter-000/senior-review.json"
 LOOP_CLEAN_JSON_OUT_DEDUP_CODEBASE=".../iter-000/dedup-codebase.json"
 LOOP_CLEAN_JSON_OUT_SPEC_DRIFT=".../iter-000/spec-drift.json"
 LOOP_CLEAN_JSON_OUT_FIX_OR_BACKLOG=".../iter-000/fix-or-backlog.json"
 ```
 
-#### 2.2 — senior-review
+#### 2.2 — coding-standards
+
+Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_CODING_STANDARDS>`.
+
+**Exécuter la procédure complète du skill coding-standards en mode audit** :
+1. Identifier les fichiers modifiés : `git diff --name-only` (audit du code frais).
+2. Auditer chaque fichier contre les standards (sections `Nommage`, `Typage`, `Maintenabilité`, `Commentaires`, `Gestion des erreurs`, `Immutabilité et pureté`). **Skipper** la section `Pas de duplication` (couverte par dedup-codebase étape 2.4).
+3. Pour chaque violation, formuler un finding avec `axis` dans l'enum { `naming`, `typing`, `maintainability`, `comments`, `error-handling`, `immutability` }, calibrer la sévérité selon la procédure du skill, formuler `observable_change`.
+4. Émettre le JSON structuré au chemin `$LOOP_CLEAN_JSON_OUT` avec schéma `{ skill, verdict, findings[], summary, blocking }`. Calculer les `id` via sha256 stable (formule canonique : `sha256([source, file, String(line_start ?? ""), axis, problem.slice(0,80)].join("|")).slice(0,16)`).
+
+**Pourquoi coding-standards dans la boucle** : l'application pendant l'implémentation (préventif) ne garantit pas que chaque ligne de code frais l'ait été — l'agent implémenteur peut avoir d'autres priorités en parallèle. Cet audit post-impl est le filet de sécurité qui rend la conformité vérifiable, pas juste espérée.
+
+#### 2.3 — senior-review
 
 Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_SENIOR_REVIEW>`.
 
@@ -79,11 +92,11 @@ Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_SENIOR_REVIEW>`.
      prompt: "Review {file_path}."
    })
    ```
-   L'agent `senior-reviewer-file` (Opus 4.6 xhigh) a ses 10 axes + calibration de sévérité définis dans son frontmatter.
+   L'agent `senior-reviewer-file` a sa méthodologie complète (axes, calibration de sévérité, format) définie dans son system prompt. Son model et son effort sont pinnés via frontmatter — ne PAS passer de override.
 3. Consolider les findings de tous les sub-agents en un rapport unique.
 4. Émettre le JSON structuré au chemin `$LOOP_CLEAN_JSON_OUT` avec schéma `{ skill, verdict, findings[], summary, blocking }`. Calculer les `id` via sha256 stable (formule canonique : `sha256([source, file, String(line_start ?? ""), axis, problem.slice(0,80)].join("|")).slice(0,16)`).
 
-#### 2.3 — dedup-codebase
+#### 2.4 — dedup-codebase
 
 Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_DEDUP_CODEBASE>`.
 
@@ -94,7 +107,7 @@ Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_DEDUP_CODEBASE>`.
 4. Phase 4 — Propositions de découpage pour les fichiers OVERSIZED (identifier responsabilités distinctes, proposer fichiers cibles avec nommage fidèle). **Cette étape demande du raisonnement — ne pas baisser en qualité**.
 5. Phase 5 — Consolidation + JSON structuré au chemin `$LOOP_CLEAN_JSON_OUT`.
 
-#### 2.4 — spec-drift
+#### 2.5 — spec-drift
 
 ```bash
 node --experimental-strip-types ~/.claude/scripts/spec-drift/src/spec-drift.ts \
@@ -103,14 +116,14 @@ node --experimental-strip-types ~/.claude/scripts/spec-drift/src/spec-drift.ts \
 
 Exit 0 = clean ou skip silencieux. Exit 1 = drift détecté. Le JSON est toujours écrit.
 
-#### 2.5 — Décision
+#### 2.6 — Décision
 
 ```bash
 bash ~/.claude/skills/loop-clean/loop-clean.sh decide <N>
 ```
 
 Stdout :
-- `CONTINUE` → passer à 2.6 (fix-or-backlog).
+- `CONTINUE` → passer à 2.7 (fix-or-backlog).
 - `EXIT_CLEAN` → zéro findings (et, si N>0, itération précédente n'a rien appliqué) → break.
 - `EXIT_OSCILLATION` → hash identique à l'itération précédente → break.
 - `EXIT_CEILING` → `N >= 9` → break.
@@ -119,7 +132,7 @@ Le fichier `decision.json` détaille la raison.
 
 **Ne JAMAIS interpréter les JSON soi-même pour décider.** La décision est rendue par `loop-clean.sh decide`, point. Même si un finding semble "pas si grave".
 
-#### 2.6 — fix-or-backlog (seulement si CONTINUE)
+#### 2.7 — fix-or-backlog (seulement si CONTINUE)
 
 Exporter :
 ```
@@ -130,7 +143,7 @@ LOOP_CLEAN_BASE_SHA=<valeur captée étape 1>
 ```
 
 **Exécuter la procédure complète du skill fix-or-backlog** :
-1. Collecter les findings depuis les 3 JSON (`senior-review.json`, `dedup-codebase.json`, `spec-drift.json`) de l'itération courante.
+1. Collecter les findings depuis les 4 JSON (`coding-standards.json`, `senior-review.json`, `dedup-codebase.json`, `spec-drift.json`) de l'itération courante.
 2. Identifier le code frais via `git diff $LOOP_CLEAN_BASE_SHA --name-only` (ancrage BASE_SHA).
 3. **Classer chaque finding** selon la matrice (axe 1 : frais vs pré-existant, axe 2 : correctness vs hygiene) et les règles overrides ("toujours fix" si critical/major ou duplication, "toujours backlog" si hygiene pré-existante, etc.). **Cette classification est du raisonnement réel — appliquer rigoureusement.**
 4. Afficher le verdict FIX NOW / BACKLOG / ESCALATED.
@@ -142,7 +155,7 @@ LOOP_CLEAN_BASE_SHA=<valeur captée étape 1>
 7. Escalader uniquement les findings réellement ambigus.
 8. Consolider les retours des sub-agents `fix-file` pour le JSON d'émission.
 
-#### 2.7 — Runtime test gate (après fix-or-backlog)
+#### 2.8 — Runtime test gate (après fix-or-backlog)
 
 ```bash
 bash ~/.claude/skills/loop-clean/loop-clean.sh test-gate <N>
@@ -161,7 +174,7 @@ Le script résout la commande de test via :
 
 **Bypass manuel** : exporter `LOOP_CLEAN_SKIP_TESTS=1` avant l'invocation pour forcer SKIP (utile si les tests sont trop longs sur un gros projet et que l'utilisateur veut la boucle sémantique seule). Ne jamais exporter ça en défaut — c'est le seul garde-fou runtime.
 
-#### 2.8 — Commit d'itération (opt-in)
+#### 2.9 — Commit d'itération (opt-in)
 
 Si `LOOP_CLEAN_COMMIT_PER_ITER=1` est exporté :
 

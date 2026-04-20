@@ -2,11 +2,12 @@
 name: loop-clean
 description: >
   Orchestrate de maniere deterministe la boucle post-implementation
-  (senior-review → dedup-codebase → spec-drift → fix-or-backlog) jusqu'a
-  convergence CLEAN, detection d'oscillation, ou plafond d'iterations.
-  Les decisions de flux sont prises par un script bash (`loop-clean.sh`)
-  qui parse les JSON structures produits par chaque skill ; Claude
-  execute les skills et ecrit les JSON. Separation stricte decision/execution.
+  (coding-standards → senior-review → dedup-codebase → spec-drift →
+  fix-or-backlog) jusqu'a convergence CLEAN, detection d'oscillation,
+  ou plafond d'iterations. Les decisions de flux sont prises par un
+  script bash (`loop-clean.sh`) qui parse les JSON structures produits
+  par chaque skill ; Claude execute les skills et ecrit les JSON.
+  Separation stricte decision/execution.
   Use when the user says "loop-clean", "boucle clean", "nettoyage boucle",
   "post-implementation loop", or any variant requesting a deterministic
   iterative cleanup of findings until convergence.
@@ -18,7 +19,7 @@ Ce skill delegue toute son orchestration a l'agent **`loop-clean-orchestrator`**
 (model `claude-opus-4-6`, effort `xhigh`, pinnes via frontmatter).
 
 **Pourquoi un agent dedie** : l'orchestration execute dans son propre contexte
-les etapes cognitives de senior-review, dedup-codebase et fix-or-backlog
+les etapes cognitives de coding-standards, senior-review, dedup-codebase et fix-or-backlog
 (classification correctness/hygiene, decoupage de fichiers oversized,
 consolidation des findings, emission JSON avec hash stables). Pinner le model
 garantit une qualite deterministe independante du model de session parent.
@@ -59,8 +60,9 @@ Presenter a l'utilisateur le rapport markdown retourne par l'agent, tel quel.
 
 ## Procedure complete de reference
 
-La procedure detaillee (init, boucle iterations avec prepare-iter / senior-review
-/ dedup-codebase / spec-drift / decide / fix-or-backlog, finalize) vit dans le
+La procedure detaillee (init, boucle iterations avec prepare-iter /
+coding-standards / senior-review / dedup-codebase / spec-drift / decide /
+fix-or-backlog, finalize) vit dans le
 system prompt de l'agent `loop-clean-orchestrator` (voir
 `~/.claude/agents/loop-clean-orchestrator.md`). L'agent est autonome et suit
 cette procedure sans intervention de l'orchestrateur de skill.
