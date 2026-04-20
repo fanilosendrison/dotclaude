@@ -244,6 +244,19 @@ Pour chaque opération produisant un effet persistant ou externalisé (identifi�
 - **PAS de findings sur les erreurs réseau timeout / retry** — `error-paths`.
 - **Oui** aux findings sur la sémantique POSIX, ordering de commit fs, garanties de durabilité du stockage sous-jacent, comportement du scheduler sous pression.
 
+### Exemple concret (severity: `critical`)
+
+```
+AXE: substrate-resilience
+FICHIER: src/services/state-io.ts:168-169
+PROBLEME: writeStateAtomic skips fsync on file fd and parent directory around rename
+EVIDENCE: writeFileSync(tmp, data) → renameSync(tmp, final). Aucun fsync(fd) avant rename, aucun fsync(dirFd) après. Sur filesystems à commit-reordering (ext4 defaut), le rename peut persister avant le contenu du tmp sur crash/power loss, laissant state.json tronqué ou vide.
+FIX: openSync(tmp, "wx") → writeSync → fsyncSync(fileFd) → closeSync → renameSync(tmp, final) → openSync(dirPath) → fsyncSync(dirFd) → closeSync.
+OBSERVABLE_CHANGE: Test de crash simulé (SIGKILL entre rename et fsync parent) laisse state.json dans un état valide et parseable. Pre-fix : 0-byte file détecté au prochain boot.
+```
+
+Calibration : plausibilité **haute** (power loss survient à grande échelle) × **corruption silencieuse** (state truncated, invariant I-1 violé) → `critical`.
+
 Axis label pour le JSON : `substrate-resilience`.
 
 ## Axe : input-contract-boundary
@@ -287,6 +300,19 @@ Le remède n'est pas toujours "corriger le code" :
 - **PAS de findings de validation d'entrée** (rejeter un input malformé — schema validation en amont, autre responsabilité).
 - **PAS de findings de sécurité des inputs** (injection, XSS, désérialisation malveillante — classe différente).
 - **Oui** aux findings sur la frontière de contrat : jusqu'où la fonction honore-t-elle son typage, et cette frontière est-elle rendue publique ?
+
+### Exemple concret (severity: `major`)
+
+```
+AXE: input-contract-boundary
+FICHIER: src/engine/dispatch-loop.ts:25-38
+PROBLEME: deepFreeze recurses without cycle protection on user state
+EVIDENCE: `function deepFreeze(obj) { for (const k of Object.keys(obj)) deepFreeze(obj[k]); return Object.freeze(obj); }`. Un input cyclique (ex: `const s = {}; s.self = s;`) produit une récursion infinie et stack overflow avant le premier Object.freeze. Le type du paramètre (Object) autorise les cycles — pattern de consommation structurellement autorisé.
+FIX: Thread un WeakSet à travers la récursion : `function deepFreeze(obj, seen = new WeakSet()) { if (seen.has(obj)) return obj; seen.add(obj); for (const k of Object.keys(obj)) deepFreeze(obj[k], seen); return Object.freeze(obj); }`.
+OBSERVABLE_CHANGE: Test `const s = {}; s.self = s; expect(() => deepFreeze(s)).not.toThrow();` passe. Pre-fix : RangeError: Maximum call stack size exceeded.
+```
+
+Calibration : plausibilité **haute** (cycles autorisés par le type Object, un consommateur finira par en produire) × **comportement incorrect observable** (crash non-catché) → `major`.
 
 Axis label pour le JSON : `input-contract-boundary`.
 
@@ -340,6 +366,19 @@ Pour les tests non-paramétrés : deux tests avec même corps modulo un nom de v
 
 Assigner via la calibration (section Référence), dimension « capacité de détection réduite ». Repères d'intuition pour cet axe : un test qui ment sur un invariant critique (sécurité, money-handling, garantie normative) = `critical`. Un test qui passe indépendamment de l'implémentation sur un hot path = `major`. Un test redondant ou qui survivrait à une mutation triviale sur chemin non-critique = `notable`. Tautology check sur chemin froid = `minor`. Phrasing d'assertion, nom de test = `nit`.
 
+### Exemple concret (severity: `major`)
+
+```
+AXE: tests-substance
+FICHIER: tests/properties/properties.test.ts:19-23
+PROBLEME: thirty tests P-01 through P-30 share identical body with zero assertion beyond runOrchestrator invocation
+EVIDENCE: Le corps de chaque test est `await runOrchestrator(config)` sans `expect()` sur le résultat. Les 30 tests passent si la fonction ne throw pas, indépendamment de la propriété que chacun prétend vérifier (idempotence, convergence, etc. selon NIB-T-CCOR §26). Filtre D (absence d'assertion) + filtre C (redondance structurelle).
+FIX: Chaque P-XX DOIT asserter la propriété distincte qu'il revendique. Ex pour P-01 idempotence : `const r1 = await runOrchestrator(c); const r2 = await runOrchestrator(c); expect(r1.state).toEqual(r2.state);`. Si la propriété n'est pas implémentée, supprimer le test plutôt que de le laisser en placeholder.
+OBSERVABLE_CHANGE: Mutation test mental — supprimer la ligne `await runOrchestrator(config)` de l'implémentation casse les 30 tests uniformément (preuve qu'ils ne testent que "la fonction existe"). Après fix, chaque P-XX échoue sur sa propriété spécifique et passe après le fix correspondant.
+```
+
+Calibration : capacité de détection réduite **sur invariant critique** (propriétés normatives du spec) → `major`. La promesse « N/N tests verts = invariants garantis » est fausse sur des invariants load-bearing.
+
 Axis label pour le JSON : `tests-substance`.
 
 ---
@@ -371,6 +410,27 @@ Axis label pour le JSON : `cross-ref-impact`.
 - Conditions complexes non extraites dans une variable nommée
 
 Tu NE DOIS PAS émettre de finding sur le nommage stylistique (abréviations, casing, longueur) — hors périmètre. L'axe cible le **naming trompeur** (nom qui ment sur le comportement), pas le nommage conventionnel.
+
+### Exemple concret (severity: `notable` à `major` selon criticité)
+
+**Finding valide** (naming trompeur) :
+
+```
+AXE: naming-readability
+FICHIER: src/domain/extraction-orchestrator.ts:42
+PROBLEME: processChunk performs remote LLM calls while name implies pure local transformation
+EVIDENCE: Le nom `processChunk` suggère une transformation locale (process = compute sur données). L'implémentation appelle `await llmAdapter.complete(prompt)` — I/O réseau avec retry, timeout, coût $. Un consommateur peut l'appeler dans une boucle tight en supposant pure/cheap.
+FIX: Renommer en `extractConceptsFromChunkViaLLM` ou `callLLMForChunk`. Le nom DOIT signaler l'I/O réseau pour que les call sites adaptent leur pattern (batching, retry, rate-limit).
+OBSERVABLE_CHANGE: `grep processChunk src/` retourne 0 résultat après rename. Les call sites forcés à utiliser le nouveau nom deviennent auditables pour leur pattern d'appel (batch vs boucle).
+```
+
+**Contre-exemple — NE PAS ÉMETTRE** (nommage stylistique, hors périmètre) :
+
+```
+❌ FICHIER: src/utils/helpers.ts:12
+OBSERVATION: Variable nommée `tmp2` au lieu de `interimResult`.
+POURQUOI PAS DE FINDING: `tmp2` est une abréviation cryptique / style conventionnel. Ce n'est pas un nom TROMPEUR (il ne ment pas sur le comportement, il est juste vague). Hors périmètre — tu NE DOIS PAS émettre ce finding.
+```
 
 Axis label pour le JSON : `naming-readability`.
 
