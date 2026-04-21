@@ -16,17 +16,31 @@ import { getGitStatus } from "./lib/git";
 import { renderStatusline, type StatuslineData } from "./lib/render-pure";
 import type { HookInput } from "./lib/types";
 
+// Type signatures for optional feature imports. These modules live under
+// ./lib/features/ and may not exist — the try/catch blocks below handle
+// their absence silently. Typed here to avoid biome-ignore noExplicitAny.
+interface UsageLimitTier {
+	utilization: number;
+	resets_at: string;
+}
+
+type GetUsageLimitsResult = {
+	five_hour: UsageLimitTier | null;
+	seven_day: UsageLimitTier | null;
+};
+
+type GetUsageLimitsFn = () => Promise<GetUsageLimitsResult>;
+type NormalizeResetsAtFn = (resetsAt: string) => string;
+type GetPeriodCostFn = (periodId: string) => number;
+type GetTodayCostV2Fn = () => number;
+type SaveSessionV2Fn = (input: HookInput, currentResetsAt?: string) => Promise<void>;
+
 // Optional feature imports - just delete the folder to disable!
-// biome-ignore lint/suspicious/noExplicitAny: dynamic optional imports
-let getUsageLimits: any = null;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic optional imports
-let normalizeResetsAt: any = null;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic optional imports
-let getPeriodCost: any = null;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic optional imports
-let getTodayCostV2: any = null;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic optional imports
-let saveSessionV2: any = null;
+let getUsageLimits: GetUsageLimitsFn | null = null;
+let normalizeResetsAt: NormalizeResetsAtFn | null = null;
+let getPeriodCost: GetPeriodCostFn | null = null;
+let getTodayCostV2: GetTodayCostV2Fn | null = null;
+let saveSessionV2: SaveSessionV2Fn | null = null;
 
 try {
 	const limitsModule = await import("./lib/features/limits");
