@@ -40,9 +40,13 @@ Sinon, passer par `/loop-clean`.
 
 ### Etape 1 — Identifier le scope
 
-- **Post-modification** (cas standard) : `git diff --name-only` — filtrer les fichiers source (skip `.md` doc pure, `.env`, `.gitignore`, etc.).
-- **Audit cible** (invocation manuelle avec argument) : utiliser le chemin fourni comme scope (`--scope=path --path=<dir>`).
-- **Audit complet** (invocation manuelle sans argument) : `--scope=all`.
+- **En mode loop-clean** : lire la variable d'environnement `LOOP_CLEAN_SCOPE` emise par `prepare-iter`. Valeurs : `diff` (fichiers modifies, cas standard) ou `all` (audit repo complet en mode `/loop-clean audit`).
+- **Invocation manuelle avec chemin** : utiliser le chemin fourni (`--scope=path --path=<dir>`).
+- **Invocation manuelle sans argument** : `--scope=all`.
+
+En l'absence de `LOOP_CLEAN_SCOPE` (invocation manuelle), le defaut est `diff`.
+
+Dans tous les cas : filtrer les fichiers source (skip `.md` doc pure, `.env`, `.gitignore`, etc.).
 
 Preparer un dossier de run `$RUN_DIR` (par defaut, un sous-dossier de `.claude/run/coding-standards/<pid>/`; en mode loop-clean, utiliser le `iter-*/` fourni par l'orchestrateur).
 
@@ -50,11 +54,11 @@ Preparer un dossier de run `$RUN_DIR` (par defaut, un sous-dossier de `.claude/r
 
 ```bash
 bun ~/.claude/scripts/coding-standards-scanner/src/cli.ts \
-  --scope=diff \
+  --scope="${LOOP_CLEAN_SCOPE:-diff}" \
   --output="$RUN_DIR/scanner.json"
 ```
 
-(Substituer `--scope=path --path=<dir>` ou `--scope=all` selon le mode.)
+(Substituer `--scope=path --path=<dir>` pour une invocation manuelle ciblee sur un sous-dossier.)
 
 Le scanner :
 - lit `STACK_EVAL.yaml` pour choisir entre `biome` et `eslint`,

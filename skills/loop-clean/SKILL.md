@@ -43,15 +43,38 @@ Ne PAS declencher :
 - Dependances runtime : `jq`, `git`, `node`, `bash >= 3`, `sha256sum` ou
   `shasum -a 256`
 
+## Modes
+
+- **`diff`** (defaut) — sub-skills auditent uniquement les fichiers
+  modifies / staged (`git diff --name-only` + `git diff --cached --name-only`).
+  C'est le cas standard post-implementation : on review ce qui vient de changer
+  avant commit.
+- **`audit`** — sub-skills auditent le **repo complet** (`--scope=all`).
+  Cas d'usage : inspection de qualite d'une codebase existante, audit
+  periodique, audit nocturne. Plus lent (~minutes selon la taille) et plus
+  couteux (dizaines de sub-agents en parallele).
+
+### Detection du mode depuis `ARGUMENTS`
+
+- Si `ARGUMENTS` contient le mot `audit` (case-insensitive, mot entier) →
+  `scope_mode=audit`.
+- Sinon → `scope_mode=diff`.
+
+Exemples :
+- `/loop-clean` → mode `diff`
+- `/loop-clean audit` → mode `audit`
+- `/loop-clean audit complet codebase` → mode `audit`
+- `/loop-clean sur <worktree>` → mode `diff` (pas de mot `audit`)
+
 ## Procedure
 
-Lancer l'agent orchestrateur :
+Lancer l'agent orchestrateur avec le `scope_mode` resolu :
 
 ```
 Agent({
   subagent_type: "loop-clean-orchestrator",
   description: "Run /loop-clean",
-  prompt: "Lance la boucle loop-clean complete selon ta procedure. Suis-la integralement jusqu'a terminaison (EXIT_CLEAN, EXIT_OSCILLATION, ou EXIT_CEILING). Retourne le rapport markdown final de l'etape finalize, enrichi d'une note sur le WARNING .gitignore si applicable."
+  prompt: "Lance la boucle loop-clean complete selon ta procedure avec scope_mode=<diff|audit>. Suis-la integralement jusqu'a terminaison (EXIT_CLEAN, EXIT_OSCILLATION, ou EXIT_CEILING). Retourne le rapport markdown final de l'etape finalize, enrichi d'une note sur le WARNING .gitignore si applicable, et d'une note sur le WARNING scope vide si applicable."
 })
 ```
 

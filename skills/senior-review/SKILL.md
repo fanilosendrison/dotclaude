@@ -40,10 +40,21 @@ Sinon, passer par `/loop-clean`.
 
 ### 1. Identifier le scope
 
-- **Post-modification** (cas standard) : `git diff --name-only` — filtrer les
-  fichiers source et de tests (skip `.md` doc pure, `.env`, `.gitignore`, etc.).
-- **Audit complet** (invocation manuelle sans diff) : tous les fichiers source
-  (`src/**/*.ts` ou equivalent) plus `specs/*.md` si applicable.
+- **En mode loop-clean** : lire la variable d'environnement `LOOP_CLEAN_SCOPE`
+  emise par `prepare-iter`. Valeurs : `diff` (fichiers modifies, cas standard)
+  ou `all` (audit repo complet en mode `/loop-clean audit`).
+- **Invocation manuelle** : `git diff --name-only` (post-modification) ou
+  scope complet (`src/**/*.ts` + `specs/*.md` si applicable) selon l'intention.
+
+En l'absence de `LOOP_CLEAN_SCOPE` (invocation manuelle), le defaut est `diff`.
+
+Resolution concrete :
+- `LOOP_CLEAN_SCOPE=diff` → `git diff --name-only` + `git diff --cached --name-only`.
+- `LOOP_CLEAN_SCOPE=all` → tous les fichiers source du repo (plus `specs/*.md`
+  si applicable).
+
+Dans tous les cas : filtrer les fichiers source et de tests (skip `.md` doc
+pure, `.env`, `.gitignore`, etc.).
 
 ### 2. Dispatcher les sub-agents en parallele
 

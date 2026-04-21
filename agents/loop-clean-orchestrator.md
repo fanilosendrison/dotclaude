@@ -22,12 +22,23 @@ Le skill écrit des artefacts dans `.claude/run/loop-clean/<PID>/`. Ce dossier *
 
 Dépendances runtime : `jq`, `git`, `node`, `bash >= 3`, `sha256sum` ou `shasum -a 256`.
 
+## Mode (scope)
+
+L'invoquant (SKILL.md de `loop-clean`) te passe un paramètre `scope_mode` dans ton prompt :
+
+- `scope_mode=diff` (défaut) — sub-skills auditent uniquement les fichiers modifiés / staged. Cas standard post-implémentation.
+- `scope_mode=audit` — sub-skills auditent le repo complet. Cas : audit codebase périodique ou nocturne.
+
+Si le prompt ne précise rien → `scope_mode=diff`.
+
+Ce paramètre est transmis à `loop-clean.sh init` via `--scope=<mode>` et propagé aux sub-skills via l'env var `LOOP_CLEAN_SCOPE` (valeur `all` si audit, `diff` sinon — c'est le token que les CLIs attendent). **Tu n'as pas à remapper toi-même** : `prepare-iter` émet `LOOP_CLEAN_SCOPE=<valeur>` à chaque itération ; il te suffit de l'exporter avec les autres env vars avant d'invoquer chaque sub-skill.
+
 ## Procédure
 
 ### Étape 1 — Initialisation
 
 ```bash
-bash ~/.claude/skills/loop-clean/loop-clean.sh init
+bash ~/.claude/skills/loop-clean/loop-clean.sh init --scope=<scope_mode>
 bash ~/.claude/skills/loop-clean/loop-clean.sh sweep-backlog
 ```
 
@@ -37,7 +48,10 @@ Capturer les env vars de stdout du `init` :
 LOOP_CLEAN_RUN_DIR=".claude/run/loop-clean/12345"
 LOOP_CLEAN_BASE_SHA="abc123..."
 LOOP_CLEAN_SESSION_ID="12345"
+LOOP_CLEAN_SCOPE_MODE="diff"
 ```
+
+**Surveiller le stderr du `init`** : en mode `diff` avec `git diff` vide, le script émet `WARNING: mode=diff but git diff and git diff --cached are both empty.`. La boucle tourne quand même mais exit CLEAN au tour 0 sans auditer un seul fichier. Si ce WARNING apparaît, l'inclure dans le rapport final.
 
 Le `sweep-backlog` est best-effort : il archive les items `[x]` plus
 vieux que 30 jours (override via `LOOP_CLEAN_BACKLOG_ARCHIVE_DAYS`) vers
@@ -59,6 +73,7 @@ Capturer les variables retournées :
 
 ```
 LOOP_CLEAN_ITERATION="0"
+LOOP_CLEAN_SCOPE="diff"   # ou "all" en mode audit
 LOOP_CLEAN_JSON_OUT_CODING_STANDARDS=".../iter-000/coding-standards.json"
 LOOP_CLEAN_JSON_OUT_SENIOR_REVIEW=".../iter-000/senior-review.json"
 LOOP_CLEAN_JSON_OUT_DEDUP_CODEBASE=".../iter-000/dedup-codebase.json"
@@ -66,14 +81,16 @@ LOOP_CLEAN_JSON_OUT_SPEC_DRIFT=".../iter-000/spec-drift.json"
 LOOP_CLEAN_JSON_OUT_FIX_OR_BACKLOG=".../iter-000/fix-or-backlog.json"
 ```
 
+Exporter `LOOP_CLEAN_SCOPE` dans l'environnement avant chaque invocation de sub-skill (coding-standards, senior-review). Les sub-skills le lisent pour décider `--scope=diff` vs `--scope=all`.
+
 #### 2.2 — coding-standards
 
 Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_CODING_STANDARDS>`.
 
 Invoquer le skill `coding-standards`, qui orchestre en interne :
 
-1. Résoudre le scope (fichiers modifiés via `git diff --name-only`).
-2. Passe mécanique : `bun ~/.claude/scripts/coding-standards-scanner/src/cli.ts --scope=diff --output=$RUN_DIR/scanner.json`. Fail-open sur linters manquants (warning stderr, skip).
+1. Résoudre le scope : lire `$LOOP_CLEAN_SCOPE` (émis par `prepare-iter`). `diff` → fichiers modifiés via `git diff --name-only` ; `all` → tout le repo.
+2. Passe mécanique : `bun ~/.claude/scripts/coding-standards-scanner/src/cli.ts --scope=$LOOP_CLEAN_SCOPE --output=$RUN_DIR/scanner.json`. Fail-open sur linters manquants (warning stderr, skip).
 3. Passe sémantique : dispatch en parallèle d'un sub-agent `coding-standards-file` par fichier (Sonnet 4.6 medium pinné dans le frontmatter). Chaque sub-agent écrit son JSON à `$RUN_DIR/files/file-<basename>-<hash>.json` via `CODING_STANDARDS_FILE_JSON_OUT`. Les scopes mécanique et sémantique sont **disjoints** — le prompt de l'agent exclut explicitement toutes les règles couvertes par le scanner.
 4. Consolidation : `bun ~/.claude/scripts/coding-standards-consolidate/src/cli.ts --scanner-json=$RUN_DIR/scanner.json --files-json-dir=$RUN_DIR/files/ --output=$LOOP_CLEAN_JSON_OUT`. Merge, dedup défensif par `id`, recalcul de `summary` et `blocking`, validation schéma (HARD FAIL / exit 4 sur JSON invalide).
 5. Le JSON final respecte le schéma canonique `{ skill, verdict, findings[], summary, blocking }`, stable pour la détection d'oscillation par `loop-clean.sh` (formule `id = sha256([source, file, String(line_start ?? ""), axis, problem.slice(0,80)].join("|")).slice(0,16)`).
@@ -87,7 +104,7 @@ Le skill gère toute l'orchestration. L'orchestrateur loop-clean n'a plus à inl
 Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_SENIOR_REVIEW>`.
 
 **Exécuter la procédure complète du skill senior-review** :
-1. Identifier les fichiers à reviewer : `git diff --name-only` (post-modification) ou audit complet (`src/**/*.ts` ou équivalent).
+1. Identifier les fichiers à reviewer selon `$LOOP_CLEAN_SCOPE` (émis par `prepare-iter`) : `diff` → `git diff --name-only` (post-modification) ; `all` → tout le repo source.
 2. Lancer un sub-agent `senior-review-file` par fichier en parallèle :
    ```
    Agent({
@@ -225,7 +242,11 @@ Stdout = rapport markdown récapitulatif. **C'est ce rapport que tu retournes à
 
 ## Output attendu
 
-Retourne le **rapport markdown de `finalize`** enrichi d'une note courte si le WARNING `.gitignore` est apparu à l'étape 1. Pas de prose additionnelle, pas de résumé supplémentaire — le rapport `finalize` est suffisant.
+Retourne le **rapport markdown de `finalize`** enrichi de notes courtes si l'un de ces WARNINGs est apparu à l'étape 1 :
+- WARNING `.gitignore` (`.claude/run/` pas ignoré)
+- WARNING scope vide (mode=diff mais `git diff` + `git diff --cached` tous deux vides — la boucle a sorti CLEAN sans rien auditer)
+
+Pas de prose additionnelle, pas de résumé supplémentaire — le rapport `finalize` est suffisant.
 
 ## Limites
 

@@ -146,9 +146,13 @@ _iter_dir() {
 # Capture baseline: test/lint/typecheck exit codes at loop start. Written to
 # $RUN_DIR/baseline.json. Used by finalize to detect regressions introduced by
 # the loop (vs pre-existing failures). Opt-out via LOOP_CLEAN_SKIP_BASELINE=1.
+# The `scope` top-level field records the run mode ("diff" | "audit") for
+# observability when inspecting a run after the fact.
 _capture_baseline() {
+	local scope_mode="${1:-diff}"
 	if [[ "${LOOP_CLEAN_SKIP_BASELINE:-0}" == "1" ]]; then
-		jq -n '{skipped: true, reason: "LOOP_CLEAN_SKIP_BASELINE=1"}' > "$RUN_DIR/baseline.json"
+		jq -n --arg scope "$scope_mode" \
+			'{scope: $scope, skipped: true, reason: "LOOP_CLEAN_SKIP_BASELINE=1"}' > "$RUN_DIR/baseline.json"
 		return 0
 	fi
 	local out="$RUN_DIR/baseline.json"
@@ -178,15 +182,40 @@ _capture_baseline() {
 	fi
 
 	jq -n \
+		--arg scope "$scope_mode" \
 		--arg test_cmd "$test_cmd" --argjson test_exit "$test_exit" \
 		--arg lint_cmd "$lint_cmd" --argjson lint_exit "$lint_exit" \
 		--arg type_cmd "$type_cmd" --argjson type_exit "$type_exit" \
-		'{test: {cmd: $test_cmd, exit: $test_exit},
+		'{scope: $scope,
+		  test: {cmd: $test_cmd, exit: $test_exit},
 		  lint: {cmd: $lint_cmd, exit: $lint_exit},
 		  typecheck: {cmd: $type_cmd, exit: $type_exit}}' > "$out"
 }
 
 cmd_init() {
+	# Parse optional --scope=diff|audit (default: diff).
+	# diff  → sub-skills audit only git-modified/staged files (standard post-impl gate).
+	# audit → sub-skills audit the full repo (full-codebase audit run).
+	local scope_mode="diff"
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			--scope=*) scope_mode="${1#--scope=}" ;;
+			--scope)   shift; scope_mode="${1:-}" ;;
+			*)
+				echo "ERROR: unknown init arg: $1" >&2
+				exit 2
+				;;
+		esac
+		shift
+	done
+	case "$scope_mode" in
+		diff|audit) ;;
+		*)
+			echo "ERROR: invalid --scope=$scope_mode (expected: diff | audit)" >&2
+			exit 2
+			;;
+	esac
+
 	_require_jq
 	mkdir -p "$RUN_DIR"
 
@@ -200,11 +229,31 @@ cmd_init() {
 		echo "NOTE: not a git repo (or no HEAD); BASE_SHA is empty." >&2
 	fi
 
+	# Persist mode so prepare-iter can emit it consistently across iterations.
+	echo "$scope_mode" > "$RUN_DIR/scope-mode"
+
+	# In diff mode, warn upfront if there is nothing to audit. The loop still
+	# runs (it will exit CLEAN at iter 0) — this just tells the user their
+	# invocation probably wasn't what they wanted.
+	if [[ "$scope_mode" == "diff" ]]; then
+		local diff_n cached_n
+		diff_n=$(git diff --name-only 2>/dev/null | grep -c . || true)
+		cached_n=$(git diff --cached --name-only 2>/dev/null | grep -c . || true)
+		if [[ "${diff_n:-0}" -eq 0 && "${cached_n:-0}" -eq 0 ]]; then
+			cat >&2 <<'EOF'
+WARNING: mode=diff but git diff and git diff --cached are both empty.
+coding-standards and senior-review will have an empty scope and the loop will
+exit CLEAN at iter 0 without auditing any file. Run /loop-clean audit to
+audit the full codebase instead.
+EOF
+		fi
+	fi
+
 	if [[ -f backlog.md ]]; then
 		cp backlog.md "$RUN_DIR/backlog-baseline.md"
 	fi
 
-	_capture_baseline
+	_capture_baseline "$scope_mode"
 
 	_check_gitignore
 
@@ -213,6 +262,7 @@ cmd_init() {
 LOOP_CLEAN_RUN_DIR="$RUN_DIR"
 LOOP_CLEAN_BASE_SHA="$(cat "$RUN_DIR/base-sha")"
 LOOP_CLEAN_SESSION_ID="$SESSION_ID"
+LOOP_CLEAN_SCOPE_MODE="$scope_mode"
 EOF
 }
 
@@ -223,12 +273,20 @@ cmd_prepare_iter() {
 	dir="$(_iter_dir "$n")"
 	mkdir -p "$dir"
 
+	# Map persisted mode (diff|audit) to the scope token the sub-skills' CLIs
+	# expect (diff|all). `audit` is the user-facing verb; `all` is the CLI arg.
+	local scope_mode="diff"
+	[[ -f "$RUN_DIR/scope-mode" ]] && scope_mode=$(cat "$RUN_DIR/scope-mode")
+	local loop_scope="diff"
+	[[ "$scope_mode" == "audit" ]] && loop_scope="all"
+
 	# Emit the env-var exports the caller should apply for each sub-step.
 	# Callers pick the one matching the skill they're about to invoke.
 	cat <<EOF
 LOOP_CLEAN_ITERATION="$n"
 LOOP_CLEAN_RUN_DIR="$RUN_DIR"
 LOOP_CLEAN_BASE_SHA="$(cat "$RUN_DIR/base-sha" 2>/dev/null || echo "")"
+LOOP_CLEAN_SCOPE="$loop_scope"
 # Per-step JSON output targets:
 LOOP_CLEAN_JSON_OUT_CODING_STANDARDS="$dir/coding-standards.json"
 LOOP_CLEAN_JSON_OUT_SENIOR_REVIEW="$dir/senior-review.json"
@@ -827,7 +885,7 @@ EOF
 usage() {
 	cat >&2 <<EOF
 Usage:
-  loop-clean.sh init
+  loop-clean.sh init [--scope=diff|audit]   # default: diff
   loop-clean.sh prepare-iter <N>
   loop-clean.sh test-gate <N>      # run project tests, emit runtime-gate.json
   loop-clean.sh commit-iter <N>    # commit iter N changes (opt-in via LOOP_CLEAN_COMMIT_PER_ITER=1)
