@@ -70,11 +70,15 @@ LOOP_CLEAN_JSON_OUT_FIX_OR_BACKLOG=".../iter-000/fix-or-backlog.json"
 
 Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_CODING_STANDARDS>`.
 
-**Exécuter la procédure complète du skill coding-standards en mode audit** :
-1. Identifier les fichiers modifiés : `git diff --name-only` (audit du code frais).
-2. Auditer chaque fichier contre les standards (sections `Nommage`, `Typage`, `Maintenabilité`, `Commentaires`, `Gestion des erreurs`, `Immutabilité et pureté`). **Skipper** la section `Pas de duplication` (couverte par dedup-codebase étape 2.4).
-3. Pour chaque violation, formuler un finding avec `axis` dans l'enum { `naming`, `typing`, `maintainability`, `comments`, `error-handling`, `immutability` }, calibrer la sévérité selon la procédure du skill, formuler `observable_change`.
-4. Émettre le JSON structuré au chemin `$LOOP_CLEAN_JSON_OUT` avec schéma `{ skill, verdict, findings[], summary, blocking }`. Calculer les `id` via sha256 stable (formule canonique : `sha256([source, file, String(line_start ?? ""), axis, problem.slice(0,80)].join("|")).slice(0,16)`).
+Invoquer le skill `coding-standards`, qui orchestre en interne :
+
+1. Résoudre le scope (fichiers modifiés via `git diff --name-only`).
+2. Passe mécanique : `bun ~/.claude/scripts/coding-standards-scanner/src/cli.ts --scope=diff --output=$RUN_DIR/scanner.json`. Fail-open sur linters manquants (warning stderr, skip).
+3. Passe sémantique : dispatch en parallèle d'un sub-agent `coding-standards-file` par fichier (Sonnet 4.6 medium pinné dans le frontmatter). Chaque sub-agent écrit son JSON à `$RUN_DIR/files/file-<basename>-<hash>.json` via `CODING_STANDARDS_FILE_JSON_OUT`. Les scopes mécanique et sémantique sont **disjoints** — le prompt de l'agent exclut explicitement toutes les règles couvertes par le scanner.
+4. Consolidation : `bun ~/.claude/scripts/coding-standards-consolidate/src/cli.ts --scanner-json=$RUN_DIR/scanner.json --files-json-dir=$RUN_DIR/files/ --output=$LOOP_CLEAN_JSON_OUT`. Merge, dedup défensif par `id`, recalcul de `summary` et `blocking`, validation schéma (HARD FAIL / exit 4 sur JSON invalide).
+5. Le JSON final respecte le schéma canonique `{ skill, verdict, findings[], summary, blocking }`, stable pour la détection d'oscillation par `loop-clean.sh` (formule `id = sha256([source, file, String(line_start ?? ""), axis, problem.slice(0,80)].join("|")).slice(0,16)`).
+
+Le skill gère toute l'orchestration. L'orchestrateur loop-clean n'a plus à inliner la procédure d'audit — il invoque juste le skill.
 
 **Pourquoi coding-standards dans la boucle** : l'application pendant l'implémentation (préventif) ne garantit pas que chaque ligne de code frais l'ait été — l'agent implémenteur peut avoir d'autres priorités en parallèle. Cet audit post-impl est le filet de sécurité qui rend la conformité vérifiable, pas juste espérée.
 

@@ -1,9 +1,13 @@
 #!/usr/bin/env bun
 
 import { deny, readHookInput, skip } from "../../hook-utils/src/index.ts";
-import { isCodeFile, isLinterCompatible } from "./lib/extensions.ts";
-import { runLintPipeline } from "./lib/runner.ts";
-import { findStackEval, readStackConfig } from "./lib/stack-config.ts";
+import {
+	findStackEval,
+	isCodeFile,
+	isLinterCompatible,
+	readStackConfig,
+	runLintPipeline,
+} from "../../lib/stack-tools/src/index.ts";
 
 async function main(): Promise<void> {
 	const input = await readHookInput();

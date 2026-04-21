@@ -1,124 +1,176 @@
 ---
 name: coding-standards
-description: Applied automatically during all implementations. Can also be invoked manually with "/coding-standards [path]" to audit existing code against the standards. Use when the user says "audite le code", "vérifie les standards", "coding standards", "check code quality", or any variant requesting a code quality review.
+description: >
+  Audit de qualite d'implementation sur 6 axes (naming, typing, maintainability,
+  comments, error-handling, immutability). Orchestrateur qui identifie le scope
+  (fichiers modifies ou audit cible), lance une passe mecanique (linters + grep
+  rules) via le scanner Bun TS, dispatche un sub-agent `coding-standards-file`
+  par fichier pour la passe semantique, puis consolide le tout en un rapport
+  JSON canonique. Consomme principalement par `loop-clean` comme etape 2.2 de
+  son pipeline post-implementation. Invocation manuelle ponctuelle possible
+  pour un audit cible. Ne modifie aucun fichier.
 ---
 
-# Coding Standards
+# Coding Standards (orchestrateur)
 
-S'applique à tous les langages. Les conventions spécifiques au langage choisi
-(casing, extensions, idiomes) sont précisées dans le CLAUDE.md du projet.
+Ce skill **n'implemente pas** la doctrine ni la methodologie d'audit. Son role est strict :
 
-## Application automatique
+1. Resoudre le scope (fichiers a auditer).
+2. Lancer la **passe mecanique** : `coding-standards-scanner` (Bun TS CLI) — linters configures via `STACK_EVAL.yaml` + grep rules portables.
+3. Dispatcher la **passe semantique** : un sub-agent `coding-standards-file` par fichier, en parallele.
+4. Consolider mecanique + semantique en un seul JSON via `coding-standards-consolidate` (Bun TS CLI).
+5. Emettre le rapport humain + copier le JSON vers `$LOOP_CLEAN_JSON_OUT` s'il est defini.
 
-Ces standards sont appliqués **systématiquement** lors de toute implémentation.
-Pas besoin d'invocation manuelle — la directive dans `~/.claude/CLAUDE.md` les rend obligatoires.
+La **doctrine** (les 6 axes, les criteres de calibration, les exclusions de perimetre) est la **source unique de verite** dans `~/.claude/agents/coding-standards-file.md`.
 
-## Invocation manuelle : audit
+La **table de mapping linter-rule → axis** vit dans `scripts/coding-standards-scanner/src/lib/rule-mapping.ts` — c'est aussi la liste des exclusions mecaniques que l'agent ne doit pas re-signaler.
 
-Argument optionnel : `$ARGUMENTS` (fichier ou dossier cible)
+## Declenchement
 
-### Workflow d'audit
+**Consommateur principal : `loop-clean`.** Le skill est appele comme etape 2.2 du pipeline `coding-standards → senior-review → dedup-codebase → spec-drift → fix-or-backlog`. La regle « post-implementation → invoquer /loop-clean avant commit » vit sur `loop-clean` (cf. CLAUDE.md global) et les conditions de skip (doc seule, config pure, typo) sont gerees a ce niveau. Ce skill ne les re-evalue pas.
 
-1. Si un argument est fourni → auditer le fichier/dossier cible contre les standards
-2. Si pas d'argument → auditer le répertoire courant
-3. Pour chaque violation trouvée, lister :
-   - **Fichier:ligne** — la localisation
-   - **Règle** — quelle section des standards est violée
-   - **Fix** — correction proposée
-4. Prioriser par impact : erreurs silencieuses > typage manquant > nommage > commentaires
-5. Appliquer les corrections uniquement si demandé explicitement
-6. Si le projet a un CLAUDE.md avec des conventions spécifiques au langage, les combiner avec les standards globaux
+**Invocation manuelle : rare.** Cas legitimes :
+
+- Audit cible d'un fichier ou d'un sous-dossier specifique, hors pipeline.
+- Debug : verifier la passe mecanique + semantique sur un diff isole sans declencher la boucle complete.
+
+Sinon, passer par `/loop-clean`.
+
+## Procedure
+
+### Etape 1 — Identifier le scope
+
+- **Post-modification** (cas standard) : `git diff --name-only` — filtrer les fichiers source (skip `.md` doc pure, `.env`, `.gitignore`, etc.).
+- **Audit cible** (invocation manuelle avec argument) : utiliser le chemin fourni comme scope (`--scope=path --path=<dir>`).
+- **Audit complet** (invocation manuelle sans argument) : `--scope=all`.
+
+Preparer un dossier de run `$RUN_DIR` (par defaut, un sous-dossier de `.claude/run/coding-standards/<pid>/`; en mode loop-clean, utiliser le `iter-*/` fourni par l'orchestrateur).
+
+### Etape 2 — Passe mecanique (scanner)
+
+```bash
+bun ~/.claude/scripts/coding-standards-scanner/src/cli.ts \
+  --scope=diff \
+  --output="$RUN_DIR/scanner.json"
+```
+
+(Substituer `--scope=path --path=<dir>` ou `--scope=all` selon le mode.)
+
+Le scanner :
+- lit `STACK_EVAL.yaml` pour choisir entre `biome` et `eslint`,
+- bucket les fichiers par langage (`.ts/.tsx/.js/.jsx` / `.py` / `.sh/.bash`),
+- lance le linter de chaque bucket avec sortie JSON (fail-open si le linter n'est pas installe — warning stderr),
+- applique les grep rules portables (debug statements, abreviations denylist, `any` sans justification en TS/TSX),
+- map chaque finding vers un axe canonique, calcule un `id` sha256 stable, emet un JSON valide contre le schema `coding-standards-schema`.
+
+### Etape 3 — Passe semantique (sub-agents)
+
+Pour chaque fichier du scope, lancer un sub-agent `coding-standards-file` en parallele. Assigner a chaque sub-agent un chemin unique pour son JSON via la variable d'environnement `CODING_STANDARDS_FILE_JSON_OUT` :
+
+```
+Agent({
+  subagent_type: "coding-standards-file",
+  description: "Coding-standards audit {basename}",
+  prompt: "CODING_STANDARDS_FILE_JSON_OUT=$RUN_DIR/files/file-{basename}-{hash}.json\nAudit {file_path}."
+})
+```
+
+Conventions :
+- Dossier `$RUN_DIR/files/` pour tous les JSONs per-file.
+- Nom de fichier unique par sub-agent (`file-<basename>-<short-hash>.json`) pour eviter les collisions quand deux fichiers ont le meme basename.
+- **Deterministe** : ne PAS passer de `model` override. Le frontmatter de `coding-standards-file` (Sonnet 4.6 medium) est la source unique de verite pour le model pin.
+
+### Etape 4 — Consolidation
+
+```bash
+bun ~/.claude/scripts/coding-standards-consolidate/src/cli.ts \
+  --scanner-json="$RUN_DIR/scanner.json" \
+  --files-json-dir="$RUN_DIR/files/" \
+  --output="$CONSOLIDATED_JSON"
+```
+
+(Ou directement `--output="$LOOP_CLEAN_JSON_OUT"` en mode loop-clean.)
+
+Le consolidateur :
+- valide le scanner JSON + chaque per-file JSON contre le schema (HARD FAIL, exit 4, si l'un est invalide),
+- merge les findings dans une seule liste,
+- dedupe defensivement par `id` (en cas de collision, garde la premiere occurrence et log un warning stderr),
+- recalcule `summary` + `blocking`,
+- emet le verdict CLEAN / ISSUES_FOUND,
+- revalide l'output final contre le schema avant d'ecrire.
+
+### Etape 5 — Rapport humain + copie JSON
+
+Emettre le rapport humain (markdown) base sur le JSON consolide. Si `$LOOP_CLEAN_JSON_OUT` est defini, le CLI `consolidate` ecrit deja au bon chemin — aucune copie supplementaire necessaire.
 
 ---
 
-## Nommage
+## Output consolide
 
-- Suivre les conventions du langage du projet (définies dans le CLAUDE.md du projet).
-- **INTERDIT partout** : abréviations cryptiques (`proc_dat`, `mgr`, `impl2`, `tmp2`).
-- Écrire le nom complet même s'il est long. Le code est lu plus souvent qu'il est écrit.
-- Les noms de fichiers, classes, fonctions et variables doivent être immédiatement
-  compréhensibles sans contexte supplémentaire.
-
-## Typage
-
-- Tout est typé. Chaque fonction a des annotations/déclarations de type sur les
-  paramètres ET le retour, dans la mesure où le langage le supporte.
-- Jamais de types génériques faibles (`any`, `Object`, `interface{}`, `dynamic`, etc.)
-  sauf cas exceptionnel justifié en commentaire.
-- Préférer les structures de données immutables pour les modèles du domaine.
-
-## Maintenabilité
-
-- **Pas de code "malin"**. Si une astuce en une ligne est illisible, préférer une version
-  plus longue mais limpide.
-- **Patterns cohérents**. Si la première fonction retourne les erreurs d'une certaine
-  manière, toutes les fonctions font pareil. Zéro surprise entre les fichiers.
-- **Fonctions courtes et focalisées**. Une fonction fait un seul travail. Si elle en fait
-  plusieurs, la découper en sous-fonctions nommées explicitement.
-- **Complexité cyclomatique max : 10** par fonction. Nombre de chemins possibles
-  dans une fonction (chaque `if`, `else`, boucle en ajoute un). Au-delà de 10 →
-  découper.
-- Utiliser l'outil de linting du projet pour vérifier automatiquement.
-
-## Commentaires
-
-**Règle : commenter le POURQUOI, jamais le QUOI.**
+### Si findings :
 
 ```
-// MAUVAIS — décrit ce que le code fait (le code le dit déjà) :
-// Calcule la remise
+VERDICT: ISSUES FOUND
+FINDINGS:
+  1. [AXE] [SEVERITE: critical | major | notable | minor | nit | design]
+     FICHIER: [path:ligne]
+     PROBLEME: [description precise]
+     EVIDENCE: [extrait de code ou raisonnement]
+     FIX: [correction proposee]
+     OBSERVABLE_CHANGE: [assertion FAIL->PASS ou comportement run-time, ≤ 2 lignes.
+                         Chaine vide UNIQUEMENT si severite=design.]
 
-// BON — explique pourquoi ce choix a été fait :
-// Taux plafonné à 30% pour éviter les marges négatives (règle métier §4.2)
+  2. ...
 
-// BON — signale un piège non évident :
-// L'arrondi se fait APRÈS la somme, pas sur chaque ligne, sinon les centimes divergent
+RESUME: [N] critical, [N] major, [N] notable, [N] minor, [N] nit, [N] design
+BLOQUANT: [oui/non — oui si au moins 1 critical ou major.]
 ```
 
-Autres règles :
+### Si aucun finding :
 
-- **Docstrings/JSDoc/Javadoc** : chaque classe et fonction publique a une documentation
-  d'une ligne expliquant son rôle. Les docs longs ne sont nécessaires que si le
-  comportement est non évident.
-- **Références aux specs** : quand le code implémente un comportement spécifié
-  dans un document du projet, le commentaire DOIT citer la spec et la section
-  (ex: `// SPEC-AUTH §3.2` ou `// Règle métier §4.1`).
-- **Pas de commentaires morts** : un commentaire qui ne correspond plus au code
-  est pire que pas de commentaire. Mettre à jour ou supprimer.
+```
+VERDICT: CLEAN
+FICHIERS AUDITES: [liste]
+CONFIANCE: [high | medium — medium si le diff est large ou touche beaucoup de modules]
+```
 
-## Gestion des erreurs
+## Regles de blocage par severite
 
-- Jamais d'erreurs silencieuses (pas de `catch` vide, pas de `except: pass`,
-  pas de `_ = mayFail()`).
-- Définir des exceptions/erreurs spécifiques au domaine, pas des messages génériques.
-- Chaque erreur porte un code traçable.
+Les definitions completes et la procedure de calibration sont dans `coding-standards-file.md`. Ici, juste ce qu'il faut pour le resume et la regle de blocage :
 
-## Immutabilité et pureté
+| severity | bloque_merge | route vers      |
+|----------|--------------|-----------------|
+| critical | oui          | backlog.md      |
+| major    | oui          | backlog.md      |
+| notable  | non          | backlog.md      |
+| minor    | non          | backlog.md      |
+| nit      | non          | backlog.md      |
+| design   | non          | design-queue.md |
 
-- Les structures de données du domaine sont immutables (utiliser les mécanismes
-  du langage : `frozen`, `readonly`, `const`, `final`, `record`, etc.).
-- Les fonctions du domaine sont pures : même entrée → même sortie, aucun effet de bord.
-- Cela garantit la prévisibilité et la testabilité du cœur métier.
+`BLOQUANT = true` ssi au moins un finding consolide a `bloque_merge = oui`.
 
-## Pas de duplication
+## Axes canoniques (6 labels)
 
-- Si la même logique existe à deux endroits → extraire dans une fonction commune.
-- Si un pattern se répète → créer une abstraction.
-- Avant de coder une nouvelle fonction, vérifier si elle existe déjà.
+Les sub-agents + le scanner emettent l'un de ces labels dans le champ `axis` du JSON. L'orchestrateur les propage tels quels. La description detaillee de chaque axe (ce qui est audit mecanique vs semantique, exclusions, exemples) vit dans `coding-standards-file.md` et `scripts/coding-standards-scanner/src/lib/rule-mapping.ts`.
 
-En mode audit `loop-clean` (voir section ci-dessous) : **ne PAS émettre de findings
-sur cette section** — la duplication est couverte par le skill `dedup-codebase`
-qui tourne dans le même pipeline. Double-émission = bruit redondant.
+- `naming`
+- `typing`
+- `maintainability`
+- `comments`
+- `error-handling`
+- `immutability`
+
+**Hors perimetre de ce skill** (couverts ailleurs dans le pipeline `loop-clean`) :
+
+- **Duplication / dead code / imports inutilises** → `dedup-codebase`.
+- **Bugs / cheat / edge cases / substrate resilience / input contract / tests-substance / cross-ref / api-surface** → `senior-review`.
+- **Conformite normative a la spec** → `spec-drift`.
 
 ---
 
 ## Emission JSON (orchestration loop-clean)
 
-En mode audit manuel standard, coding-standards produit le rapport humain
-classique (fichier:ligne / règle / fix). En complément, si la variable
-d'environnement `LOOP_CLEAN_JSON_OUT` est définie, écrire aussi un JSON
-structuré au chemin indiqué. Si la variable n'est pas définie, ne rien écrire
-(invocation standalone, comportement inchangé).
+Le skill emet toujours le rapport humain ci-dessus. Si `LOOP_CLEAN_JSON_OUT` est defini, le CLI `consolidate` ecrit le JSON structure a ce chemin (pas le LLM directement — c'est une operation technique, pas semantique).
 
 ### Schema
 
@@ -130,7 +182,7 @@ structuré au chemin indiqué. Si la variable n'est pas définie, ne rien écrir
     {
       "id": "string (16 hex chars)",
       "source": "coding-standards",
-      "axis": "string (un des 6 labels canoniques)",
+      "axis": "naming" | "typing" | "maintainability" | "comments" | "error-handling" | "immutability",
       "severity": "critical" | "major" | "notable" | "minor" | "nit" | "design",
       "file": "string (chemin relatif repo)",
       "line_start": number | null,
@@ -138,7 +190,7 @@ structuré au chemin indiqué. Si la variable n'est pas définie, ne rien écrir
       "problem": "string",
       "evidence": "string",
       "fix_proposal": "string",
-      "observable_change": "string (≤ 2 lignes ; chaîne vide UNIQUEMENT si severity=design)"
+      "observable_change": "string (≤ 2 lignes ; chaine vide UNIQUEMENT si severity=design)"
     }
   ],
   "summary": {
@@ -149,7 +201,7 @@ structuré au chemin indiqué. Si la variable n'est pas définie, ne rien écrir
 }
 ```
 
-`blocking` = `true` si au moins un finding est `critical` ou `major`.
+`blocking` = `true` ssi au moins un finding est `critical` ou `major`.
 
 ### Formule canonique de `id`
 
@@ -157,66 +209,4 @@ structuré au chemin indiqué. Si la variable n'est pas définie, ne rien écrir
 id = sha256([source, file, String(line_start ?? ""), axis, problem.slice(0,80)].join("|")).slice(0,16)
 ```
 
-Stable inter-invocations — condition nécessaire pour la détection d'oscillation
-par `loop-clean.sh`.
-
-### Axes canoniques (6 labels)
-
-- `naming` — abréviations cryptiques, noms trop vagues, identifiants incompréhensibles sans contexte
-- `typing` — types génériques faibles (`any`, `Object`, `interface{}`, `dynamic`) sans justification, annotations manquantes
-- `maintainability` — code malin illisible, patterns incohérents, fonctions trop longues ou faisant plusieurs choses, complexité cyclomatique > 10
-- `comments` — commentaires qui décrivent le QUOI au lieu du POURQUOI, docstrings manquants sur API publique, référence spec manquante, commentaires morts
-- `error-handling` — erreurs silencieuses, erreurs génériques, codes d'erreur non traçables
-- `immutability` — mutations sur structures de données du domaine, fonctions du domaine non pures
-
-**Section `## Pas de duplication` : non émise en mode audit** (couverte par dedup-codebase).
-
-### Calibration de sévérité
-
-Avant d'assigner une sévérité :
-
-1. **La violation introduit-elle un risque bug actif sur un chemin atteignable en prod ?** (ex : `catch: pass` qui avale une erreur de persistance, `any` qui laisse passer un type incorrect dans un calcul money) → `major` voire `critical` si corruption silencieuse.
-
-2. **La violation rend-elle le code structurellement fragile mais sans bug déclenché aujourd'hui ?** (ex : complexité 15 hors hot path, fonction 80 lignes pas encore problématique, fonction domaine impure) → `notable`.
-
-3. **Violation à faible impact — style, lisibilité, doc manquante sur API peu utilisée ?** → `minor`.
-
-4. **Pure cosmétique — format docstring, commentaire mort, préférence stylistique ?** → `nit`.
-
-5. **Préoccupation réelle mais sans `observable_change` formulable** (décision d'arbitrage, trade-off, clarification de règle) → `design`.
-
-Défaut des findings coding-standards : **la majorité sont `notable`/`minor`/`nit`**. `major` uniquement sur risque bug actif. `critical` exceptionnel.
-
-### Règle du `observable_change`
-
-Chaque finding DOIT avoir un `observable_change` formulable comme :
-- une assertion de linter/grep qui bascule FAIL → PASS (ex : `grep -nE '\bany\b' file.ts` ne retourne plus cette ligne),
-- ou une métrique structurelle mesurable (ex : complexité cyclomatique de `foo` passe de 15 à 8, fonction `bar` passe de 80 à 30 lignes),
-- ou une vérification post-fix reproductible.
-
-≤ 2 lignes. Si impossible à formuler → `severity = design`.
-
-### Stabilité du `problem`
-
-Pour un même finding, la chaîne `problem` DOIT être identique entre invocations
-(même formulation). Format canonique : `{règle} violated in {contexte concret}`,
-phrase affirmative, sans modalité. Ex stable : `weak type "any" used in foo return signature`.
-Ex non stable : `Il se pourrait que foo utilise any...`.
-
-### Scope de l'audit en mode loop-clean
-
-- Auditer **uniquement les fichiers modifiés** (`git diff --name-only`), pas
-  le repo entier, pour éviter de noyer le pipeline loop-clean de findings
-  pré-existants non liés à l'itération courante.
-- Skipper la section `## Pas de duplication` (dedup-codebase s'en charge).
-- Les findings pré-existants (sur code non-frais) seront routés vers `backlog.md`
-  par `fix-or-backlog` selon la matrice frais/pré-existant × correctness/hygiene.
-
-### Emplacement d'écriture
-
-```bash
-[[ -n "$LOOP_CLEAN_JSON_OUT" ]] && echo "$JSON_CONTENT" > "$LOOP_CLEAN_JSON_OUT"
-```
-
-Le LLM produit le JSON via l'outil `Write` directement sur le chemin donné par
-la variable. Le fichier doit être valide JSON (parseable par `jq`).
+Stable inter-invocations — condition necessaire pour la detection d'oscillation par `loop-clean.sh`. Implementation canonique : `scripts/lib/coding-standards-schema/src/id-hash.ts` (consommee par le scanner et le consolidateur). Le sub-agent semantique calcule la meme formule a la main via `shasum -a 256` — la stabilite des deux implementations est un invariant du systeme.

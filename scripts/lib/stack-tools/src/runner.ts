@@ -15,8 +15,10 @@ export interface PipelineResult {
 	hasErrors: boolean;
 }
 
-/** Check if a tool is installed. */
-async function isInstalled(tool: string): Promise<boolean> {
+/** Check if a tool is installed. Exposed for callers that want to branch before
+ *  constructing a pipeline (e.g. the coding-standards scanner doing fail-open
+ *  semantics on missing linters). */
+export async function isInstalled(tool: string): Promise<boolean> {
 	try {
 		const proc = Bun.spawn(["which", tool], {
 			stdout: "pipe",
