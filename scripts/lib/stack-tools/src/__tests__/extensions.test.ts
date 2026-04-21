@@ -4,7 +4,7 @@ import {
 	isCodeFile,
 	isLinterCompatible,
 	LINTER_EXTENSIONS,
-} from "../lib/extensions.ts";
+} from "../extensions.ts";
 
 describe("CODE_EXTENSIONS", () => {
 	it("contains all expected extensions", () => {

@@ -2,13 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findStackEval, readStackConfig } from "../lib/stack-config.ts";
+import { findStackEval, readStackConfig } from "../stack-config.ts";
 
 describe("findStackEval", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "post-write-linter-test-"));
+		tempDir = mkdtempSync(join(tmpdir(), "stack-tools-test-"));
 	});
 
 	afterEach(() => {
@@ -21,9 +21,6 @@ describe("findStackEval", () => {
 			"decisions:\n  linter: biome",
 		);
 		const result = findStackEval(join(tempDir, "src", "file.ts"));
-		// file.ts parent is tempDir (src doesn't exist but dirname still works)
-		// Actually need to check — findStackEval walks from dirname of filePath
-		// dirname of tempDir/src/file.ts = tempDir/src, then walks up to tempDir
 		expect(result).toBe(join(tempDir, "STACK_EVAL.yaml"));
 	});
 
@@ -49,7 +46,7 @@ describe("readStackConfig", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "post-write-linter-config-"));
+		tempDir = mkdtempSync(join(tmpdir(), "stack-tools-config-"));
 	});
 
 	afterEach(() => {
