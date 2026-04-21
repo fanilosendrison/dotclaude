@@ -204,6 +204,8 @@ Stdout = rapport markdown récapitulatif. **C'est ce rapport que tu retournes à
 
 3. **Ne jamais interpréter les JSON toi-même pour décider.** La décision est rendue par `loop-clean.sh decide`.
 
+   Si `decide` sort en `exit 4` avec le message `ERROR: missing iteration JSON(s)`, tu as oublié de mapper `LOOP_CLEAN_JSON_OUT` avant d'invoquer le skill listé comme manquant. Corrige l'export et relance uniquement l'étape fautive, puis retente `decide`.
+
 4. **Ne jamais nettoyer manuellement `$RUN_DIR`.** Les anciens runs > 7 jours sont purgés auto au prochain `init`.
 
 5. **Ne pas passer de `model` ou `effort` override** dans les appels `Agent(...)` vers les sub-agents — laisser leur frontmatter décider (déterminisme).

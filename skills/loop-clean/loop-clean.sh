@@ -59,6 +59,29 @@ EOF
 	fi
 }
 
+# Fail hard (exit 4) if any of the four semantic JSONs that `decide` consumes
+# is missing. A missing JSON means the orchestrator forgot to remap
+# LOOP_CLEAN_JSON_OUT before invoking a skill, which would otherwise silently
+# under-count findings and mask real issues.
+_require_iter_jsons() {
+	local dir="$1"
+	local missing=()
+	[[ -f "$dir/coding-standards.json" ]] || missing+=("coding-standards.json")
+	[[ -f "$dir/senior-review.json"    ]] || missing+=("senior-review.json")
+	[[ -f "$dir/dedup-codebase.json"   ]] || missing+=("dedup-codebase.json")
+	[[ -f "$dir/spec-drift.json"       ]] || missing+=("spec-drift.json")
+	if (( ${#missing[@]} > 0 )); then
+		cat >&2 <<EOF
+ERROR: missing iteration JSON(s) in $dir:
+  ${missing[*]}
+The orchestrator probably forgot to export LOOP_CLEAN_JSON_OUT (pointing at the
+expected per-skill path) before invoking a skill. Re-run the failing skill with
+the correct remap, then retry decide.
+EOF
+		exit 4
+	fi
+}
+
 # Delete RUN_DIR entries older than RETENTION_DAYS. Uses find -depth -delete
 # so we never need rm -rf (per user's CLAUDE.md). Silent on missing base dir.
 # mtime is evaluated on the RUN_DIR itself — acceptable because each RUN_DIR
@@ -528,6 +551,8 @@ cmd_decide() {
 	local n="$1"
 	local dir
 	dir="$(_iter_dir "$n")"
+
+	_require_iter_jsons "$dir"
 
 	local cs="$dir/coding-standards.json"
 	local sr="$dir/senior-review.json"
