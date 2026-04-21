@@ -63,10 +63,13 @@ l'orchestrateur reste sur le model de la session parent.
 
 ### 3. Consolider
 
-Collecter les rapports per-file. Pour chaque finding retourne par un sub-agent,
-conserver l'integralite des champs (axe, severite, fichier, ligne, probleme,
-evidence, fix, observable_change). Calculer les totaux par severite et la
-regle de blocage.
+Collecter les rapports per-file. Pour chaque finding retourne par un sub-agent :
+- propager tel quel les champs (axe, severite, fichier, ligne, probleme,
+  evidence, fix, observable_change) ;
+- calculer le champ `id` via la formule canonique (§ Formule canonique de `id`
+  ci-dessous).
+
+Calculer les totaux par severite et la regle de blocage.
 
 Emettre le rapport consolide (format ci-dessous).
 
@@ -198,7 +201,5 @@ vs `file="a.ts"` + `line_start=42`). Le hash doit etre stable d'une invocation
 a l'autre — c'est la condition necessaire pour la detection d'oscillation par
 `loop-clean.sh`.
 
-La stabilite inter-invocations du champ `problem` est garantie cote sub-agent
-(regle decrite dans `senior-reviewer-file.md`). L'orchestrateur la propage
-sans reformulation.
+L'orchestrateur ne reformule jamais `problem` — propager tel quel.
 
