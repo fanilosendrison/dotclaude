@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SecurityRules } from "./types";
 
-export const SECURITY_RULES: SecurityRules = {
+export const SECURITY_RULES: Readonly<SecurityRules> = Object.freeze({
 	CRITICAL_COMMANDS: [
 		"del",
 		"format",
@@ -133,9 +133,9 @@ export const SECURITY_RULES: SecurityRules = {
 		"/var/tmp/",
 		`${process.cwd()}/`,
 	],
-};
+});
 
-export const SAFE_COMMANDS = [
+export const SAFE_COMMANDS: readonly string[] = Object.freeze([
 	"ls",
 	"dir",
 	"pwd",
@@ -171,4 +171,4 @@ export const SAFE_COMMANDS = [
 	"mysql",
 	"sqlite3",
 	"mongo",
-];
+]);

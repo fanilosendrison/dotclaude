@@ -1,15 +1,13 @@
+import { SECURITY_RULES } from "./security-rules";
 import type { ValidationResult } from "./types";
 
-const DANGEROUS_COMMANDS = [
-	"sudo",
-	"su",
-	"chmod",
-	"chown",
-	"dd",
-	"mkfs",
-	"fdisk",
-	"kill",
-	"killall",
+// Derived from SECURITY_RULES — single source of truth for dangerous command
+// lists. Consolidates CRITICAL_COMMANDS, PRIVILEGE_COMMANDS, and
+// SYSTEM_COMMANDS (minus network commands which are handled separately).
+const DANGEROUS_COMMANDS: readonly string[] = [
+	...SECURITY_RULES.CRITICAL_COMMANDS,
+	...SECURITY_RULES.PRIVILEGE_COMMANDS,
+	...SECURITY_RULES.SYSTEM_COMMANDS,
 ];
 
 export class CommandValidator {
