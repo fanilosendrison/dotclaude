@@ -1,5 +1,5 @@
 ---
-name: senior-reviewer-file
+name: senior-review-file
 description: Review hostile d'un fichier modifié sur les 12 axes du skill senior-review. Utilisé par le skill senior-review comme sub-agent par fichier.
 color: red
 model: claude-opus-4-6

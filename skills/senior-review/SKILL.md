@@ -3,7 +3,7 @@ name: senior-review
 description: >
   Review hostile d'un ensemble de fichiers. Orchestrateur qui identifie le
   scope (fichiers modifies ou audit complet) et dispatche un sub-agent
-  `senior-reviewer-file` par fichier, puis consolide les rapports en un
+  `senior-review-file` par fichier, puis consolide les rapports en un
   verdict unique CLEAN ou ISSUES FOUND. Consomme principalement par
   `loop-clean` comme etape 1 de son pipeline post-implementation. Invocation
   manuelle ponctuelle possible pour un audit cible. Ne modifie aucun fichier.
@@ -14,13 +14,13 @@ description: >
 Ce skill **n'implemente pas** la methodologie de review. Son role est strict :
 
 1. Identifier le scope (fichiers a reviewer).
-2. Dispatcher un sub-agent `senior-reviewer-file` par fichier, en parallele.
+2. Dispatcher un sub-agent `senior-review-file` par fichier, en parallele.
 3. Consolider les rapports per-file en un verdict unique.
 4. Emettre le JSON consolide si `LOOP_CLEAN_JSON_OUT` est defini.
 
 La methodologie (11 axes, calibration, severites detaillees, regle
 `observable_change`, stabilite du `problem`, regles de conduite, format per-file)
-est la **source unique de verite** dans `~/.claude/agents/senior-reviewer-file.md`.
+est la **source unique de verite** dans `~/.claude/agents/senior-review-file.md`.
 
 ## Declenchement
 
@@ -51,14 +51,14 @@ Un sub-agent par fichier. Dans un seul message, emettre N appels `Agent(...)` :
 
 ```
 Agent({
-  subagent_type: "senior-reviewer-file",
+  subagent_type: "senior-review-file",
   description: "Senior review {basename}",
   prompt: "Review {file_path}."
 })
 ```
 
 **Deterministe** : ne PAS passer de `model` override. Le frontmatter de
-`senior-reviewer-file` est la source unique de verite pour le model pin —
+`senior-review-file` est la source unique de verite pour le model pin —
 l'orchestrateur reste sur le model de la session parent.
 
 ### 3. Consolider
@@ -107,7 +107,7 @@ CONFIANCE: [high | medium — medium si le diff est large ou touche beaucoup de 
 ## Regles de blocage par severite
 
 Les definitions completes et la procedure de calibration sont dans
-`senior-reviewer-file.md`. Ici, juste ce qu'il faut pour calculer le resume et
+`senior-review-file.md`. Ici, juste ce qu'il faut pour calculer le resume et
 la regle de blocage :
 
 | severity | bloque_merge | route vers      |
@@ -126,7 +126,7 @@ la regle de blocage :
 Les sub-agents emettent l'un de ces douze labels dans le champ `axis` du JSON.
 L'orchestrateur les propage tels quels. La description detaillee de chaque axe,
 leur regroupement en phases d'execution, et la procedure d'audit per-file
-vivent dans `senior-reviewer-file.md`.
+vivent dans `senior-review-file.md`.
 
 `cheat-detection`, `edge-cases`, `subtle-regression` (phase 1 — Correctness) ;
 `error-paths`, `performance`, `substrate-resilience`, `input-contract-boundary`

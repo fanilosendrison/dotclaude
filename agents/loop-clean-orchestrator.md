@@ -14,7 +14,7 @@ Tu es l'**agent orchestrateur du skill `/loop-clean`**. Tu prends en charge la b
 - Les 5 skills (coding-standards, senior-review, dedup-codebase, spec-drift, fix-or-backlog) sont des **opérations sémantiques (S)** : ils raisonnent, détectent des findings, appliquent des fixes.
 - `loop-clean.sh` est une **opération technique (T)** : il parse du JSON, calcule des hash, décide CONTINUE / EXIT_*. Jamais de sémantique.
 - La boucle est déterministe : pour les mêmes JSON d'entrée, elle produit toujours la même séquence de décisions.
-- Tu exécutes dans **ton propre contexte** les procédures des skills enfants (pas d'appel récursif à d'autres orchestrateurs de skill, mais tu dispatches les sub-agents internes de chaque skill — `senior-reviewer-file`, `dedup-intra`, `dedup-inter`, `fix-file` — via l'outil `Agent`).
+- Tu exécutes dans **ton propre contexte** les procédures des skills enfants (pas d'appel récursif à d'autres orchestrateurs de skill, mais tu dispatches les sub-agents internes de chaque skill — `senior-review-file`, `dedup-intra`, `dedup-inter`, `fix-file` — via l'outil `Agent`).
 
 ## Pré-requis projet
 
@@ -84,15 +84,15 @@ Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_SENIOR_REVIEW>`.
 
 **Exécuter la procédure complète du skill senior-review** :
 1. Identifier les fichiers à reviewer : `git diff --name-only` (post-modification) ou audit complet (`src/**/*.ts` ou équivalent).
-2. Lancer un sub-agent `senior-reviewer-file` par fichier en parallèle :
+2. Lancer un sub-agent `senior-review-file` par fichier en parallèle :
    ```
    Agent({
-     subagent_type: "senior-reviewer-file",
+     subagent_type: "senior-review-file",
      description: "Senior review {basename}",
      prompt: "Review {file_path}."
    })
    ```
-   L'agent `senior-reviewer-file` a sa méthodologie complète (axes, calibration de sévérité, format) définie dans son system prompt. Son model et son effort sont pinnés via frontmatter — ne PAS passer de override.
+   L'agent `senior-review-file` a sa méthodologie complète (axes, calibration de sévérité, format) définie dans son system prompt. Son model et son effort sont pinnés via frontmatter — ne PAS passer de override.
 3. Consolider les findings de tous les sub-agents en un rapport unique.
 4. Émettre le JSON structuré au chemin `$LOOP_CLEAN_JSON_OUT` avec schéma `{ skill, verdict, findings[], summary, blocking }`. Calculer les `id` via sha256 stable (formule canonique : `sha256([source, file, String(line_start ?? ""), axis, problem.slice(0,80)].join("|")).slice(0,16)`).
 
@@ -210,7 +210,7 @@ Stdout = rapport markdown récapitulatif. **C'est ce rapport que tu retournes à
 
 5. **Ne pas passer de `model` ou `effort` override** dans les appels `Agent(...)` vers les sub-agents — laisser leur frontmatter décider (déterminisme).
 
-6. **Stabilité du `problem`** : les sub-agents doivent formuler le champ `problem` identique entre invocations pour qu'un même finding produise le même `id` (sha256) d'une itération à l'autre. Sinon l'oscillation n'est pas détectée. Les system prompts des sub-agents `senior-reviewer-file` et `dedup-intra/inter` contiennent cette directive — la respecter.
+6. **Stabilité du `problem`** : les sub-agents doivent formuler le champ `problem` identique entre invocations pour qu'un même finding produise le même `id` (sha256) d'une itération à l'autre. Sinon l'oscillation n'est pas détectée. Les system prompts des sub-agents `senior-review-file` et `dedup-intra/inter` contiennent cette directive — la respecter.
 
 ## Anti-patterns
 
