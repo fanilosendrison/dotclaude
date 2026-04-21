@@ -36,13 +36,6 @@ config pure, typo) sont gerees a ce niveau. Ce skill ne les re-evalue pas.
 
 Sinon, passer par `/loop-clean`.
 
-## Inputs
-
-1. **Le diff** : fichiers modifies (code et tests). L'orchestrateur le resout via
-   `git diff --name-only` ou le contexte de la session.
-2. **Le codebase existant** : disponible en lecture pour les sub-agents qui en
-   ont besoin pour l'axe cross-ref.
-
 ## Procedure
 
 ### 1. Identifier le scope

@@ -22,7 +22,7 @@ d'implementation. Ne modifie aucun fichier — ni code, ni spec, ni config.
 - Commandes d'execution simples (run tests, lint)
 - Questions de clarification
 
-## Inputs
+## Contexte consulte
 
 1. **Strategie proposee** : le texte complet de la proposition (plan, etapes, justifications)
 2. **Specs en contexte** : tous les documents normatifs presents dans la session (Brief Systeme, Phase specs, test vectors, CLAUDE.md projet, etc.)

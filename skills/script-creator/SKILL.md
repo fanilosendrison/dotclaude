@@ -7,7 +7,7 @@ description: Crée un nouveau script dans `~/.claude/scripts/` en suivant la con
 
 Scaffolder de scripts `~/.claude/scripts/`. Génère le dossier, le squelette bash, et le CLAUDE.md pré-rempli.
 
-## Input
+## Argument
 
 Argument attendu : `<nom> <description courte>`
 

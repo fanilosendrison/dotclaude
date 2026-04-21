@@ -18,7 +18,7 @@ les choix structurels de Claude Code sans se substituer aux specs.
 - L'arborescence `src/` doit être décidée avant de coder
 - Le mainteneur demande un module map, une arborescence, ou un overview d'architecture
 
-## Inputs
+## Lecture prealable
 
 Lire ces fichiers dans l'ordre :
 

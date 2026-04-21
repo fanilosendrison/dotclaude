@@ -19,7 +19,7 @@ items backlog. Le but : que le mainteneur n'ait pas a trier manuellement.
 - L'utilisateur demande "quoi fix et quoi backlog", "dis moi quoi fix",
   "trie les findings", ou toute variante
 
-## Inputs
+## Modes d'invocation
 
 ### Mode standalone (comportement par defaut)
 
