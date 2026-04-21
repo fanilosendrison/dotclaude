@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# loop-clean.sh — Deterministic orchestrator for the post-implementation
+# loop-clean.sh — Deterministic flow controller for the post-implementation
 # workflow: coding-standards → senior-review → dedup-codebase → spec-drift
 # → fix-or-backlog, iterated until CLEAN / OSCILLATION / CEILING.
+#
+# The actual orchestrator is the `loop-clean-orchestrator` agent; this
+# script is its flow controller — pure bash, no semantic work.
 #
 # This script is pure bash: it parses JSON produced by the skills, decides
 # which iteration to run next, and never performs semantic work. All

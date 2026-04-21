@@ -1,12 +1,14 @@
 ---
 name: loop-clean
 description: >
-  Orchestrate de maniere deterministe la boucle post-implementation
+  Orchestre de maniere deterministe la boucle post-implementation
   (coding-standards → senior-review → dedup-codebase → spec-drift →
   fix-or-backlog) jusqu'a convergence CLEAN, detection d'oscillation,
-  ou plafond d'iterations. Les decisions de flux sont prises par un
-  script bash (`loop-clean.sh`) qui parse les JSON structures produits
-  par chaque skill ; Claude execute les skills et ecrit les JSON.
+  ou plafond d'iterations. L'orchestration est deleguee a l'agent
+  `loop-clean-orchestrator` ; les decisions de flux (next action,
+  convergence, oscillation, ceiling) sont calculees par un controleur
+  bash (`loop-clean.sh`) qui parse les JSON produits par chaque skill.
+  Claude execute les skills et ecrit les JSON.
   Separation stricte decision/execution.
   Use when the user says "loop-clean", "boucle clean", "nettoyage boucle",
   "post-implementation loop", or any variant requesting a deterministic
