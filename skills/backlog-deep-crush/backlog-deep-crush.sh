@@ -22,6 +22,7 @@ readonly STABILITY_WINDOW=3
 readonly RUN_DIR_BASE=".claude/run/backlog-deep-crush"
 readonly RETENTION_DAYS=7
 readonly BACKLOG_FILE="backlog.md"
+readonly SCRIPT_NAME="backlog-deep-crush"
 
 # Batch sizes per severity. Priority enforced by cmd_next_item.
 readonly CRITICAL_BATCH_SIZE=1
@@ -38,51 +39,11 @@ readonly RUN_DIR="${RUN_DIR_BASE}/${SESSION_ID}"
 # it as blocked in backlog.md at EXIT_STABLE (cross-session).
 readonly SKIP_THRESHOLD=2
 
-_sha256() {
-	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum | awk '{print $1}'
-	else
-		shasum -a 256 | awk '{print $1}'
-	fi
-}
-
-_require_jq() {
-	if ! command -v jq >/dev/null 2>&1; then
-		echo "ERROR: backlog-deep-crush requires jq. See loop-clean SKILL.md for install." >&2
-		exit 2
-	fi
-}
-
-_cleanup_old_runs() {
-	local root="$RUN_DIR_BASE"
-	[[ -d "$root" ]] || return 0
-	local deleted=0
-	while IFS= read -r -d '' dir; do
-		if [[ "$dir" == "$RUN_DIR" ]]; then continue; fi
-		if find "$dir" -depth -delete 2>/dev/null; then
-			deleted=$((deleted + 1))
-		fi
-	done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -mtime "+${RETENTION_DAYS}" -print0 2>/dev/null)
-	if [[ "$deleted" -gt 0 ]]; then
-		echo "backlog-deep-crush: purged $deleted run(s) older than ${RETENTION_DAYS} days." >&2
-	fi
-}
-
-_cycle_dir() {
-	local n="$1"
-	printf '%s/cycle-%03d' "$RUN_DIR" "$n"
-}
-
-_skip_counts_file() {
-	echo "$RUN_DIR/skip-counts.json"
-}
-
-# Ensure the skip-counts sidecar exists as a valid empty JSON object.
-_ensure_skip_counts() {
-	local f
-	f="$(_skip_counts_file)"
-	[[ -f "$f" ]] || { mkdir -p "$(dirname "$f")" && echo '{}' > "$f"; }
-}
+# Source shared utilities (_sha256, _require_jq, _cleanup_old_runs, etc.)
+# and shared commands (cmd_record_skip, cmd_mark_done, cmd_escalate_stuck, etc.).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/backlog-common.sh
+source "$SCRIPT_DIR/../lib/backlog-common.sh"
 
 # Parse backlog.md, emit JSONL of (id, severity, line_number, raw_line) for
 # every UNCHECKED item matching "- [ ] [critical|major|notable|minor|nit] ...".
@@ -219,283 +180,6 @@ cmd_next_item() {
 	fi
 
 	printf '%s\n' "$filtered" | jq -c 'select(.severity == "nit")' | head -n "$NIT_BATCH_SIZE"
-}
-
-# Bump the skip-count for each id. Used by the orchestrator after each cycle
-# for items that were dispatched but not fixed (fixes_applied[] missed them).
-cmd_record_skip() {
-	_require_jq
-	local ids_arg="${1:-}"
-	[[ -z "$ids_arg" ]] && return 0
-	_ensure_skip_counts
-	local skip_file
-	skip_file="$(_skip_counts_file)"
-
-	local ids_json
-	ids_json=$(printf '%s\n' $ids_arg | jq -R . | jq -sc .)
-	local tmp
-	tmp=$(mktemp)
-	jq --argjson ids "$ids_json" \
-		'reduce $ids[] as $id (.; .[$id] = ((.[$id] // 0) + 1))' \
-		"$skip_file" > "$tmp"
-	mv "$tmp" "$skip_file"
-}
-
-# Annotate blocked items in backlog.md. Called by the orchestrator when
-# EXIT_STABLE fires (and only then), before finalize. Adds a suffix
-# "(blocked: YYYY-MM-DD, skipped Nx)" to each item whose skip-count >=
-# SKIP_THRESHOLD. Idempotent: items already containing "(blocked:" are skipped.
-cmd_annotate_blocked() {
-	_require_jq
-	_ensure_skip_counts
-	[[ -f "$BACKLOG_FILE" ]] || return 0
-	local skip_file
-	skip_file="$(_skip_counts_file)"
-
-	local blocked
-	blocked=$(jq -r --argjson thr "$SKIP_THRESHOLD" \
-		'to_entries[] | select(.value >= $thr) | "\(.key)\t\(.value)"' "$skip_file")
-	[[ -z "$blocked" ]] && return 0
-
-	local tmp_map
-	tmp_map=$(mktemp)
-	_scan_backlog | jq -r '"\(.id)\t\(.line)"' > "$tmp_map"
-
-	local today
-	today=$(date -u +%Y-%m-%d)
-
-	local annotated=0
-	while IFS=$'\t' read -r id count; do
-		[[ -z "$id" ]] && continue
-		local target_line
-		target_line=$(awk -v id="$id" '$1 == id {print $2; exit}' "$tmp_map")
-		[[ -z "$target_line" ]] && continue
-		local tmp_bk
-		tmp_bk=$(mktemp)
-		awk -v L="$target_line" -v D="$today" -v C="$count" '
-			NR == L && $0 !~ /\(blocked:/ {
-				$0 = $0 " (blocked: " D ", skipped " C "x)"
-			}
-			{ print }
-		' "$BACKLOG_FILE" > "$tmp_bk"
-		mv "$tmp_bk" "$BACKLOG_FILE"
-		annotated=$((annotated + 1))
-	done <<< "$blocked"
-	rm -f "$tmp_map"
-	echo "backlog-deep-crush: annotated $annotated item(s) as blocked in $BACKLOG_FILE" >&2
-}
-
-# One-shot migration helper: move all legacy `(blocked: ..., skipped Nx)`
-# items from backlog.md to design-queue.md as [escalated] entries. Use on
-# repos that pre-date the escalate-stuck command — their backlog contains
-# items frozen by the old annotate-blocked flow, invisible to any crush
-# until the marker is removed manually. migrate-blocked unfreezes them
-# all by surfacing them as design-queue escalations with origin metadata.
-#
-# Idempotent via destruction: migrated items disappear from backlog.md,
-# so a second invocation is a no-op. Skip counts are NOT touched (the
-# items are already out-of-flight).
-cmd_migrate_blocked() {
-	_require_jq
-	[[ -f "$BACKLOG_FILE" ]] || return 0
-	local design_file="design-queue.md"
-
-	if [[ ! -f "$design_file" ]]; then
-		cat > "$design_file" <<'EOF'
-# Design queue
-
-Items qui necessitent un arbitrage humain avant d'etre traduits en fix atomique. Ces items ne sont **pas** traites par `/backlog-crush` ou `/backlog-deep-crush`. Voir `~/.claude/skills/fix-or-backlog/SKILL.md` pour la convention de format et la logique d'escalade auto.
-
-EOF
-	fi
-
-	local today
-	today=$(date -u +%Y-%m-%d)
-	local lines_to_remove
-	lines_to_remove=$(mktemp)
-	local migrated=0
-	local n=0
-
-	while IFS= read -r line; do
-		n=$((n + 1))
-		if [[ "$line" =~ ^-[[:space:]]+\[[[:space:]]\][[:space:]]+\[([^]]+)\][[:space:]].*\(blocked:[[:space:]]*([0-9]{4}-[0-9]{2}-[0-9]{2}),[[:space:]]*skipped[[:space:]]+([0-9]+)x\) ]]; then
-			local severity first_blocked_date skipped_count
-			severity=$(printf '%s\n' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')
-			first_blocked_date="${BASH_REMATCH[2]}"
-			skipped_count="${BASH_REMATCH[3]}"
-
-			local stripped
-			stripped=$(printf '%s\n' "$line" | sed -E \
-				-e 's/^-[[:space:]]+\[[[:space:]]\][[:space:]]+\[[^]]+\][[:space:]]*//' \
-				-e 's/[[:space:]]*\(blocked:[[:space:]]*[0-9-]+,[[:space:]]*skipped[[:space:]]+[0-9]+x\)[[:space:]]*$//')
-
-			local input="backlog|${n}|${line:0:80}"
-			local id
-			id=$(printf '%s' "$input" | _sha256 | cut -c1-16)
-
-			{
-				printf '%s\n' "- [ ] [escalated] $stripped"
-				echo "  - origin_severity: $severity"
-				echo "  - origin_id: $id"
-				echo "  - skipped_count: $skipped_count"
-				echo "  - first_blocked_on: $first_blocked_date"
-				echo "  - escalated_on: $today"
-				echo "  - why: legacy-blocked item migrated to design-queue via \`migrate-blocked\`. Was invisible to crush since $first_blocked_date."
-				echo "  - cta: decide — retry (move back to backlog.md without marker), drop (resolve via code + check off), or redefine scope (rewrite + move back)."
-				echo ""
-			} >> "$design_file"
-
-			echo "$n" >> "$lines_to_remove"
-			migrated=$((migrated + 1))
-		fi
-	done < "$BACKLOG_FILE"
-
-	if [[ "$migrated" -gt 0 ]]; then
-		local drop_list
-		drop_list=$(sort -u "$lines_to_remove" | tr '\n' ',' | sed 's/,$//')
-		local tmp_bk
-		tmp_bk=$(mktemp)
-		awk -v lines="$drop_list" '
-			BEGIN {
-				n = split(lines, arr, ",")
-				for (i = 1; i <= n; i++) if (arr[i] != "") drop[arr[i]+0] = 1
-			}
-			!(NR in drop) { print }
-		' "$BACKLOG_FILE" > "$tmp_bk"
-		mv "$tmp_bk" "$BACKLOG_FILE"
-	fi
-
-	rm -f "$lines_to_remove"
-	echo "backlog-deep-crush: migrated $migrated legacy-blocked item(s) to $design_file" >&2
-}
-
-# Escalate items with skip_count >= SKIP_THRESHOLD to design-queue.md.
-# Physically moves each stuck item out of backlog.md and appends an
-# "[escalated]" entry in design-queue.md with origin metadata. Called
-# by the orchestrator at EXIT_STABLE INSTEAD of annotate-blocked — the
-# two are alternatives: annotate marks items as blocked in place,
-# escalate moves them to a separate human-facing queue.
-#
-# Idempotent: items already absent from backlog.md (previously escalated)
-# are no-ops. Skip counts for escalated ids are cleared from the sidecar.
-cmd_escalate_stuck() {
-	_require_jq
-	_ensure_skip_counts
-	[[ -f "$BACKLOG_FILE" ]] || return 0
-	local skip_file
-	skip_file="$(_skip_counts_file)"
-	local design_file="design-queue.md"
-
-	local stuck_data
-	stuck_data=$(jq -r --argjson thr "$SKIP_THRESHOLD" \
-		'to_entries[] | select(.value >= $thr) | "\(.key)\t\(.value)"' "$skip_file")
-	[[ -z "$stuck_data" ]] && return 0
-
-	local tmp_map
-	tmp_map=$(mktemp)
-	_scan_backlog > "$tmp_map"
-
-	if [[ ! -f "$design_file" ]]; then
-		cat > "$design_file" <<'EOF'
-# Design queue
-
-Items qui necessitent un arbitrage humain avant d'etre traduits en fix atomique. Ces items ne sont **pas** traites par `/backlog-crush` ou `/backlog-deep-crush`. Voir `~/.claude/skills/fix-or-backlog/SKILL.md` pour la convention de format et la logique d'escalade auto.
-
-EOF
-	fi
-
-	local today
-	today=$(date -u +%Y-%m-%d)
-	local lines_to_remove
-	lines_to_remove=$(mktemp)
-	local escalated_ids=()
-	local escalated=0
-
-	while IFS=$'\t' read -r id count; do
-		[[ -z "$id" ]] && continue
-		local entry
-		entry=$(jq -rc --arg id "$id" 'select(.id == $id)' "$tmp_map" | head -1)
-		[[ -z "$entry" ]] && continue
-		local line_num severity raw
-		line_num=$(printf '%s\n' "$entry" | jq -r '.line')
-		severity=$(printf '%s\n' "$entry" | jq -r '.severity')
-		raw=$(printf '%s\n' "$entry" | jq -r '.raw')
-
-		local stripped
-		stripped=$(printf '%s\n' "$raw" | sed -E 's/^-[[:space:]]+\[[[:space:]]\][[:space:]]+\[[^]]+\][[:space:]]*//')
-
-		{
-			printf '%s\n' "- [ ] [escalated] $stripped"
-			echo "  - origin_severity: $severity"
-			echo "  - origin_id: $id"
-			echo "  - skipped_count: $count"
-			echo "  - escalated_on: $today"
-			echo "  - why: recurrent defensive skip by backlog-fix after $count cycle(s). Likely cause: scope too large, spec ambiguity, or pending product decision."
-			echo "  - cta: examine manually. See \`.claude/run/backlog-deep-crush/*/\` for sub-agent skip reasons."
-			echo ""
-		} >> "$design_file"
-
-		echo "$line_num" >> "$lines_to_remove"
-		escalated_ids+=("$id")
-		escalated=$((escalated + 1))
-	done <<< "$stuck_data"
-
-	if [[ "$escalated" -gt 0 ]]; then
-		local drop_list
-		drop_list=$(sort -u "$lines_to_remove" | tr '\n' ',' | sed 's/,$//')
-		local tmp_bk
-		tmp_bk=$(mktemp)
-		awk -v lines="$drop_list" '
-			BEGIN {
-				n = split(lines, arr, ",")
-				for (i = 1; i <= n; i++) if (arr[i] != "") drop[arr[i]+0] = 1
-			}
-			!(NR in drop) { print }
-		' "$BACKLOG_FILE" > "$tmp_bk"
-		mv "$tmp_bk" "$BACKLOG_FILE"
-
-		local ids_json
-		ids_json=$(printf '%s\n' "${escalated_ids[@]}" | jq -R . | jq -s .)
-		local tmp_sk
-		tmp_sk=$(mktemp)
-		jq --argjson ids "$ids_json" \
-			'reduce $ids[] as $id (.; del(.[$id]))' \
-			"$skip_file" > "$tmp_sk"
-		mv "$tmp_sk" "$skip_file"
-	fi
-
-	rm -f "$tmp_map" "$lines_to_remove"
-	echo "backlog-deep-crush: escalated $escalated item(s) to $design_file" >&2
-}
-
-# Mark each id as done by flipping "[ ]" to "[x]" on the matching line.
-# Arguments: space-separated list of ids (as produced by next-item).
-cmd_mark_done() {
-	_require_jq
-	local ids_arg="${1:-}"
-	[[ -z "$ids_arg" ]] && return 0
-	[[ -f "$BACKLOG_FILE" ]] || return 0
-
-	local tmp_map
-	tmp_map=$(mktemp)
-	_scan_backlog | jq -r '"\(.id)\t\(.line)"' > "$tmp_map"
-
-	local marked=0
-	for id in $ids_arg; do
-		local target_line
-		target_line=$(awk -v id="$id" '$1 == id {print $2; exit}' "$tmp_map")
-		if [[ -z "$target_line" ]]; then
-			echo "backlog-deep-crush: id $id not found in backlog (already marked?)" >&2
-			continue
-		fi
-		local tmp_bk
-		tmp_bk=$(mktemp)
-		awk -v L="$target_line" 'NR == L { sub(/\[ \]/, "[x]") } { print }' "$BACKLOG_FILE" > "$tmp_bk"
-		mv "$tmp_bk" "$BACKLOG_FILE"
-		marked=$((marked + 1))
-	done
-	rm -f "$tmp_map"
-	echo "backlog-deep-crush: marked $marked item(s) as done." >&2
 }
 
 cmd_decide() {
@@ -640,9 +324,9 @@ cmd_cleanup() {
 	if [[ -d "$RUN_DIR_BASE" ]]; then
 		local remaining
 		remaining=$(find "$RUN_DIR_BASE" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-		echo "backlog-deep-crush: $remaining run(s) remaining under $RUN_DIR_BASE/"
+		echo "$SCRIPT_NAME: $remaining run(s) remaining under $RUN_DIR_BASE/"
 	else
-		echo "backlog-deep-crush: no $RUN_DIR_BASE/ directory present."
+		echo "$SCRIPT_NAME: no $RUN_DIR_BASE/ directory present."
 	fi
 }
 
