@@ -68,8 +68,7 @@ conserver l'integralite des champs (axe, severite, fichier, ligne, probleme,
 evidence, fix, observable_change). Calculer les totaux par severite et la
 regle de blocage.
 
-Emettre le rapport consolide (format ci-dessous) et, si
-`LOOP_CLEAN_JSON_OUT` est defini, ecrire le JSON consolide.
+Emettre le rapport consolide (format ci-dessous).
 
 ---
 
@@ -102,20 +101,22 @@ FICHIERS REVIEWES: [liste]
 CONFIANCE: [high | medium — medium si le diff est large ou touche beaucoup de modules]
 ```
 
-## Severites (reference courte pour consolidation)
+## Regles de blocage par severite
 
 Les definitions completes et la procedure de calibration sont dans
 `senior-reviewer-file.md`. Ici, juste ce qu'il faut pour calculer le resume et
 la regle de blocage :
 
-- **critical** — bloque le merge.
-- **major** — bloque le merge.
-- **notable** — ne bloque pas. Backlog prioritaire.
-- **minor** — ne bloque pas.
-- **nit** — ne bloque jamais.
-- **design** — ne bloque pas. Route vers `design-queue.md` (pas `backlog.md`).
+| severity | bloque_merge | route vers      |
+|----------|--------------|-----------------|
+| critical | oui          | backlog.md      |
+| major    | oui          | backlog.md      |
+| notable  | non          | backlog.md      |
+| minor    | non          | backlog.md      |
+| nit      | non          | backlog.md      |
+| design   | non          | design-queue.md |
 
-`BLOQUANT = true` ssi au moins un finding consolide est `critical` ou `major`.
+`BLOQUANT = true` ssi au moins un finding consolide a `bloque_merge = oui`.
 
 ## Axes (labels canoniques)
 
@@ -144,10 +145,16 @@ finding — double-emission = bruit dans le pipeline.
 
 ## Emission JSON (orchestration loop-clean)
 
-Le skill produit toujours le rapport humain ci-dessus. En complement, si la
-variable d'environnement `LOOP_CLEAN_JSON_OUT` est definie, ecrire egalement
-un JSON structure au chemin indique. Si la variable n'est pas definie, ne
-rien ecrire (invocation standalone, comportement inchange).
+Le skill emet toujours le rapport humain ci-dessus. Si `LOOP_CLEAN_JSON_OUT`
+est defini, il ecrit aussi un JSON structure au chemin indique :
+
+```bash
+[[ -n "$LOOP_CLEAN_JSON_OUT" ]] && echo "$JSON_CONTENT" > "$LOOP_CLEAN_JSON_OUT"
+```
+
+En pratique le LLM produit le JSON via l'outil `Write` directement sur le
+chemin donne par la variable. Le fichier doit etre valide JSON (parseable
+par `jq`). Si la variable n'est pas definie, rien de plus — mode standalone.
 
 ### Schema
 
@@ -195,11 +202,3 @@ La stabilite inter-invocations du champ `problem` est garantie cote sub-agent
 (regle decrite dans `senior-reviewer-file.md`). L'orchestrateur la propage
 sans reformulation.
 
-### Emplacement d'ecriture
-
-```bash
-[[ -n "$LOOP_CLEAN_JSON_OUT" ]] && echo "$JSON_CONTENT" > "$LOOP_CLEAN_JSON_OUT"
-```
-
-En pratique le LLM produit le JSON via l'outil `Write` directement sur le chemin
-donne par la variable. Le fichier doit etre valide JSON (parseable par `jq`).
