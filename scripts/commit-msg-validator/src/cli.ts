@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
-import type { HookInput, HookOutput } from "./lib/types";
+import { readHookInput } from "../../hook-utils/src/index";
+import type { HookInput, PreToolUseOutput } from "../../hook-utils/src/types";
 import {
 	extractCommitMessage,
 	isGitCommit,
@@ -8,29 +9,14 @@ import {
 } from "./lib/validator";
 
 async function main() {
-	const chunks: Buffer[] = [];
-	for await (const chunk of process.stdin) {
-		chunks.push(chunk);
-	}
-
-	const input = Buffer.concat(chunks).toString();
-	if (!input.trim()) {
-		process.exit(0);
-	}
-
-	let hookData: HookInput;
-	try {
-		hookData = JSON.parse(input);
-	} catch {
-		process.exit(0);
-	}
+	const hookData: HookInput = await readHookInput();
 
 	// Only intercept Bash tool
 	if (hookData.tool_name !== "Bash") {
 		process.exit(0);
 	}
 
-	const command = hookData.tool_input?.command;
+	const command = hookData.tool_input?.command as string | undefined;
 	if (!command || !isGitCommit(command)) {
 		process.exit(0);
 	}
@@ -67,7 +53,7 @@ async function main() {
 		"Format attendu: <type>(<scope>): <description>",
 	].join("\n");
 
-	const hookOutput: HookOutput = {
+	const hookOutput: PreToolUseOutput = {
 		hookSpecificOutput: {
 			hookEventName: "PreToolUse",
 			permissionDecision: "deny",

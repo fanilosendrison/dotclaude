@@ -1,10 +1,5 @@
-export interface HookInput {
-	tool_name: string;
-	tool_input: {
-		command?: string;
-	};
-	session_id?: string;
-}
+// HookInput and PreToolUseOutput are now imported from hook-utils (single source of truth).
+// See ../../hook-utils/src/types.ts for the canonical definitions.
 
 export interface ValidationResult {
 	isValid: boolean;
@@ -23,12 +18,4 @@ export interface SecurityRules {
 	PROTECTED_PATHS: string[];
 	SAFE_EXECUTABLE_PATHS: string[];
 	SAFE_RM_PATHS: string[];
-}
-
-export interface HookOutput {
-	hookSpecificOutput: {
-		hookEventName: string;
-		permissionDecision: "allow" | "block" | "ask";
-		permissionDecisionReason: string;
-	};
 }

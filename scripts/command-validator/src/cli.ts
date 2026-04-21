@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 
-import { join } from "node:path";
-import type { HookInput, HookOutput } from "./lib/types";
+import { appendFile, mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { readHookInput } from "../../hook-utils/src/index";
+import type { HookInput, PreToolUseOutput } from "../../hook-utils/src/types";
 import { CommandValidator } from "./lib/validator";
 
 const LOG_FILE = join(import.meta.dir, "../data/security.log");
@@ -26,15 +28,8 @@ async function logSecurityEvent(
 
 	try {
 		const logLine = `${JSON.stringify(logEntry)}\n`;
-		const file = Bun.file(LOG_FILE);
-		const exists = await file.exists();
-
-		if (exists) {
-			const existingContent = await file.text();
-			await Bun.write(LOG_FILE, existingContent + logLine);
-		} else {
-			await Bun.write(LOG_FILE, logLine);
-		}
+		await mkdir(dirname(LOG_FILE), { recursive: true });
+		await appendFile(LOG_FILE, logLine);
 
 		console.error(
 			`[SECURITY] ${result.isValid ? "ALLOWED" : "BLOCKED"}: ${command.substring(0, 100)}`,
@@ -48,27 +43,7 @@ async function main() {
 	const validator = new CommandValidator();
 
 	try {
-		const stdin = process.stdin;
-		const chunks: Buffer[] = [];
-
-		for await (const chunk of stdin) {
-			chunks.push(chunk);
-		}
-
-		const input = Buffer.concat(chunks).toString();
-
-		if (!input.trim()) {
-			console.error("No input received from stdin");
-			process.exit(1);
-		}
-
-		let hookData: HookInput;
-		try {
-			hookData = JSON.parse(input);
-		} catch (error) {
-			console.error("Invalid JSON input:", (error as Error).message);
-			process.exit(1);
-		}
+		const hookData: HookInput = await readHookInput();
 
 		const toolName = hookData.tool_name || "Unknown";
 		const toolInput = hookData.tool_input || {};
@@ -79,7 +54,7 @@ async function main() {
 			process.exit(0);
 		}
 
-		const command = toolInput.command;
+		const command = toolInput.command as string | undefined;
 		if (!command) {
 			console.error("No command found in tool input");
 			process.exit(1);
@@ -99,7 +74,7 @@ async function main() {
 				? `Command blocked!\n\nCommand: ${command}\nReason: ${result.violations.join(", ")}\nSeverity: ${result.severity}`
 				: `⚠️ Potentially dangerous command\n\nCommand: ${command}\nReason: ${result.violations.join(", ")}\nSeverity: ${result.severity}\n\nDo you want to proceed?`;
 
-		const hookOutput: HookOutput = {
+		const hookOutput: PreToolUseOutput = {
 			hookSpecificOutput: {
 				hookEventName: "PreToolUse",
 				permissionDecision: result.action === "deny" ? "deny" : "ask",
