@@ -47,6 +47,22 @@ _sha256() {
 	fi
 }
 
+# Walk up from cwd to find STACK_EVAL.yaml. Emits its absolute path on stdout,
+# or empty string if not found. Factored out of _capture_baseline and
+# _resolve_test_command to avoid duplicating the walk-up pattern.
+_find_stack_eval() {
+	local dir
+	dir="$(pwd)"
+	while [[ "$dir" != "/" ]]; do
+		if [[ -f "$dir/STACK_EVAL.yaml" ]]; then
+			echo "$dir/STACK_EVAL.yaml"
+			return 0
+		fi
+		dir=$(dirname "$dir")
+	done
+	echo ""
+}
+
 # ---------------------------------------------------------------------------
 # Precondition checks
 # ---------------------------------------------------------------------------
@@ -166,12 +182,7 @@ _capture_baseline() {
 
 	# Lint / typecheck from STACK_EVAL.yaml if present. Silent skip if absent.
 	local se_path=""
-	local dir
-	dir="$(pwd)"
-	while [[ "$dir" != "/" ]]; do
-		[[ -f "$dir/STACK_EVAL.yaml" ]] && se_path="$dir/STACK_EVAL.yaml" && break
-		dir=$(dirname "$dir")
-	done
+	se_path=$(_find_stack_eval)
 	if [[ -n "$se_path" ]]; then
 		lint_cmd=$(grep -E '^[[:space:]]*lint_command:' "$se_path" 2>/dev/null \
 			| head -n 1 | sed 's/.*lint_command:[[:space:]]*//' | sed 's/^"//; s/"$//' || true)
@@ -377,15 +388,7 @@ _resolve_test_command() {
 		return 0
 	fi
 	local se_path=""
-	local dir
-	dir="$(pwd)"
-	while [[ "$dir" != "/" ]]; do
-		if [[ -f "$dir/STACK_EVAL.yaml" ]]; then
-			se_path="$dir/STACK_EVAL.yaml"
-			break
-		fi
-		dir=$(dirname "$dir")
-	done
+	se_path=$(_find_stack_eval)
 	if [[ -n "$se_path" ]]; then
 		# Priority 1: explicit test_command override.
 		local cmd
