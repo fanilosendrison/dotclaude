@@ -1,15 +1,11 @@
 ---
 name: loop-clean
 description: >
-  Orchestre de maniere deterministe la boucle post-implementation
-  (coding-standards → senior-review → dedup-codebase → spec-drift →
-  fix-or-backlog) jusqu'a convergence CLEAN, detection d'oscillation,
-  ou plafond d'iterations. L'orchestration est deleguee a l'agent
-  `loop-clean-orchestrator` ; les decisions de flux (next action,
-  convergence, oscillation, ceiling) sont calculees par un controleur
-  bash (`loop-clean.sh`) qui parse les JSON produits par chaque skill.
-  Claude execute les skills et ecrit les JSON.
-  Separation stricte decision/execution.
+  Boucle deterministe post-implementation : enchaine
+  coding-standards → senior-review → dedup-codebase → spec-drift →
+  fix-or-backlog jusqu'a convergence CLEAN, detection d'oscillation,
+  ou plafond d'iterations. Modes : `diff` (fichiers modifies, defaut)
+  ou `audit` (repo complet).
   Use when the user says "loop-clean", "boucle clean", "nettoyage boucle",
   "post-implementation loop", or any variant requesting a deterministic
   iterative cleanup of findings until convergence.
@@ -17,14 +13,8 @@ description: >
 
 # loop-clean
 
-Ce skill delegue toute son orchestration a l'agent **`loop-clean-orchestrator`**
-(model `claude-opus-4-6`, effort `xhigh`, pinnes via frontmatter).
-
-**Pourquoi un agent dedie** : l'orchestration execute dans son propre contexte
-les etapes cognitives de coding-standards, senior-review, dedup-codebase et fix-or-backlog
-(classification correctness/hygiene, decoupage de fichiers oversized,
-consolidation des findings, emission JSON avec hash stables). Pinner le model
-garantit une qualite deterministe independante du model de session parent.
+Delegue l'orchestration a l'agent **`loop-clean-orchestrator`** (model et
+effort pinnes via frontmatter).
 
 ## Quand declencher
 
@@ -36,35 +26,18 @@ Ne PAS declencher :
 - Apres un simple `/senior-review` (ponctuel)
 - Pour un audit one-shot sans intention d'appliquer les fixes
 
-## Pre-requis projet
-
-- `.claude/run/` gitignore (l'agent emet un WARNING sinon via stderr de
-  `loop-clean.sh init`)
-- Dependances runtime : `jq`, `git`, `node`, `bash >= 3`, `sha256sum` ou
-  `shasum -a 256`
-
-## Modes
-
-- **`diff`** (defaut) — sub-skills auditent uniquement les fichiers
-  modifies / staged (`git diff --name-only` + `git diff --cached --name-only`).
-  C'est le cas standard post-implementation : on review ce qui vient de changer
-  avant commit.
-- **`audit`** — sub-skills auditent le **repo complet** (`--scope=all`).
-  Cas d'usage : inspection de qualite d'une codebase existante, audit
-  periodique, audit nocturne. Plus lent (~minutes selon la taille) et plus
-  couteux (dizaines de sub-agents en parallele).
-
-### Detection du mode depuis `ARGUMENTS`
+## Detection du mode depuis `ARGUMENTS`
 
 - Si `ARGUMENTS` contient le mot `audit` (case-insensitive, mot entier) →
-  `scope_mode=audit`.
-- Sinon → `scope_mode=diff`.
+  `scope_mode=audit` (repo complet via `--scope=all`).
+- Sinon → `scope_mode=diff` (fichiers modifies / staged, cas standard
+  post-implementation).
 
 Exemples :
-- `/loop-clean` → mode `diff`
-- `/loop-clean audit` → mode `audit`
-- `/loop-clean audit complet codebase` → mode `audit`
-- `/loop-clean sur <worktree>` → mode `diff` (pas de mot `audit`)
+- `/loop-clean` → `diff`
+- `/loop-clean audit` → `audit`
+- `/loop-clean audit complet codebase` → `audit`
+- `/loop-clean sur <worktree>` → `diff` (pas de mot `audit`)
 
 ## Procedure
 
@@ -78,16 +51,7 @@ Agent({
 })
 ```
 
-**Ne PAS passer de `model` ou `effort` override** dans l'appel `Agent(...)` —
-laisser le frontmatter de l'agent decider (determinisme).
+**Ne PAS passer de `model` ou `effort` override** — laisser le frontmatter de
+l'agent decider (determinisme).
 
 Presenter a l'utilisateur le rapport markdown retourne par l'agent, tel quel.
-
-## Procedure complete de reference
-
-La procedure detaillee (init, boucle iterations avec prepare-iter /
-coding-standards / senior-review / dedup-codebase / spec-drift / decide /
-fix-or-backlog, finalize) vit dans le
-system prompt de l'agent `loop-clean-orchestrator` (voir
-`~/.claude/agents/loop-clean-orchestrator.md`). L'agent est autonome et suit
-cette procedure sans intervention de l'orchestrateur de skill.
