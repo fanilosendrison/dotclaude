@@ -30,12 +30,30 @@ Une seule couche qui déclenche C0 suffit à justifier turnlock pour l'ensemble 
 
 | Terme | Définition |
 |---|---|
-| **Couche d'orchestration** | Unité (skill ou agent) qui contient au moins un parmi : dispatch vers plusieurs sub-unités, boucle avec condition de sortie, branchement conditionnel entre délégations, consolidation/agrégation de résultats multiples |
-| **Agent feuille** | Agent dont le rôle est purement du jugement atomique (zéro orchestration interne) |
-| **Étape mécanique** | Transformation déterministe sans jugement LLM : read, diff, parse, glob, groupBy, count, dedup, format, hash, compteur, plafond |
-| **Étape de jugement** | Décision sémantique qui nécessite un LLM (classification, analyse hostile, synthèse qualitative) |
+| **Couche d'orchestration** | Unité (skill ou agent) dont l'une des opérations **traverse une frontière de process LLM** : dispatch vers une ou plusieurs sub-unités (`Agent(...)`, `Skill(...)`), boucle avec condition de sortie qui ré-invoque une sub-unité, branchement conditionnel entre délégations, **consolidation de résultats venant de sub-unités distinctes**. |
+| **Frontière de process LLM** | Passage d'un contexte LLM à un autre (spawn de sub-agent, invocation de skill, re-entry via `--resume`). Une opération qui reste dans le même contexte LLM ne constitue PAS une frontière. |
+| **Agent feuille** | Agent qui ne traverse aucune frontière de process : pas de spawn, pas d'invocation de skill externe, pas de re-entry. Une **consolidation intra-contexte** (ex : dedup / format / counts des findings que l'agent vient lui-même d'émettre dans le même run) est **tolérée** et ne disqualifie pas l'agent comme feuille. |
+| **Étape mécanique** | Transformation déterministe sans jugement LLM : read, diff, parse, glob, groupBy, count, dedup par hash, format, sha, compteur, plafond |
+| **Étape de jugement** | Décision sémantique qui nécessite un LLM (classification, analyse hostile, synthèse qualitative, dedup sémantique cross-angles) |
 
 ## Procédure
+
+### Étape 0 — Charger le registry de models (préalable)
+
+Avant toute évaluation économique, rafraîchir et charger le registry de models :
+
+```bash
+bun run ~/.claude/models/refresh.ts   # TTL 24h — no-op si frais
+```
+
+Puis lire `~/.claude/models/models.json`. Le registry expose :
+- **Tiers** (haiku / sonnet / opus) avec `current_id` à jour (ex : `claude-haiku-4-5`)
+- **`relative_cost`** normalisé sur haiku=1 (synchronisé depuis LiteLLM)
+- **`efforts`** (low / medium / high / xhigh) — dimension orthogonale au tier
+
+Si `"stale": true` dans la réponse, le fetch LiteLLM a échoué — les prix datent du dernier refresh réussi. Signaler `prix potentiellement obsolètes` dans le verdict final.
+
+Utiliser systématiquement les **current_id** du registry dans les recommandations concrètes ("descendre à `claude-haiku-4-5`"), pas les tiers génériques seuls.
 
 ### Étape 1 — Identifier la pile d'orchestration
 
@@ -47,6 +65,8 @@ Une seule couche qui déclenche C0 suffit à justifier turnlock pour l'ensemble 
 Si une couche contient à la fois jugement ET orchestration → noter les deux séparément (elles seront séparées en §5.3 Temps 1 si adoption).
 
 ### Étape 2 — Appliquer C0 (nécessité structurelle)
+
+**Pré-requis critique.** B1/B2/B3 exigent tous qu'un **état mécanique traverse une frontière de process LLM**. Une consolidation ou agrégation qui reste dans le même contexte LLM (ex : un agent qui dedup / format / compte les findings qu'il vient lui-même d'émettre) ne matche aucun pattern — ce n'est pas du fan-in au sens de C0, c'est du post-processing intra-LLM. Ne pas confondre.
 
 Pour **chaque couche**, vérifier si elle matche un des 3 patterns :
 
@@ -76,17 +96,46 @@ L'état de la 1ère délégation doit survivre à la décision déterministe.
 
 ### Étape 3 — Appliquer C0' (hétérogénéité économique)
 
-Si C0 est NON, évaluer les trois conditions **cumulatives (AND)** :
+Si C0 est NON, l'évaluation se fait en **deux temps** pour éviter les verdicts paresseux ("NON" sans raisonnement).
 
-1. **Étape cheap déléguable existante** — au moins une étape de jugement triviale déléguable à un agent feuille bon marché (haiku + low effort). Sinon rien à gagner.
-2. **Volume par étape ≥ 2-5k tokens** — sinon l'overhead de spawn mange le gain.
-3. **Skill invoqué fréquemment** — sinon la dette de complexité (FSM + skill-consumer + protocole) n'est jamais remboursée.
+#### Étape 3a — Énumérer les candidats de décomposition
 
-Gain potentiel à rechercher : 5-20× sur le coût total, via hétérogénéité de **model** (haiku/sonnet/opus), d'**effort** (low/medium/high), ou d'**isolation de contexte** (sub-agent frais au lieu de traîner l'historique main).
+Lister **explicitement** toutes les étapes ou sous-étapes qui *pourraient en principe* descendre à un model moins cher (haiku/sonnet) ou à du TS pur. Pour chaque candidat, noter :
+- Ce qu'il ferait (l'opération précise)
+- Quelle cible (haiku/sonnet/TS pur)
+- Pourquoi c'est plus cheap que le status quo
 
-**Verdict C0' :**
-- Les 3 conditions satisfaites → **C0' OUI → turnlock opportuniste** (cost engineering, arbitrage perf/cost)
-- Au moins une échoue → **C0' NON → fallback : skill pré-turnlock (+ script terminal/initial si mécanique auto-contenue)**
+**Si aucun candidat identifiable** → C0' = NON *pour absence de décomposition*. Noter "aucun candidat" dans le verdict.
+
+#### Étape 3b — Passer chaque candidat aux deux gates quantitatifs
+
+Pour **chaque** candidat énuméré à 3a, évaluer les deux conditions **cumulatives (AND)** :
+
+1. **Volume ≥ 2-5k tokens** (input + output du candidat) — sinon l'overhead de spawn mange le gain → *killed sur volume*.
+2. **Fréquence × complexité-debt justifie le ROI** — le parent est-il invoqué assez souvent pour amortir la dette de complexité (FSM + skill-consumer + protocole) ? Sinon → *killed sur fréquence*.
+
+Gain potentiel à rechercher : se calcule à partir des `relative_cost` du registry (§ Étape 0). Exemple actuel (à vérifier dans models.json en live) — haiku=1, sonnet≈3, opus≈5 → descendre opus→haiku sur une étape triviale rapporte ~5× sur le segment concerné. Le gain total d'une décomposition se calcule en pondérant par la fraction de tokens de chaque étape. Sources d'hétérogénéité exploitables : **tier** (haiku/sonnet/opus), **effort** (low/medium/high/xhigh — orthogonal au tier), **isolation de contexte** (sub-agent frais au lieu de traîner l'historique main).
+
+#### Verdict C0'
+
+- **Au moins un candidat survit aux deux gates** → **C0' OUI → turnlock opportuniste** (cost engineering)
+- **Tous les candidats sont killed** → **C0' NON → fallback : skill pré-turnlock (+ script terminal/initial si mécanique auto-contenue)**. Indiquer *sur quoi* chaque candidat a été killed (volume ou fréquence).
+
+**Règle de formulation stricte.** Le verdict C0' NE DOIT PAS contenir un "NON" sans justification explicite : soit "aucun candidat identifiable" (3a vide), soit "candidat X killed sur volume/fréquence" (3b). Un verdict C0' NON non justifié est un signal d'évaluation paresseuse — retourner à 3a.
+
+#### Exemple canonique de verdict C0' NON (pour calibration)
+
+Cas : `/git-commits-push` (skill qui rédige un commit message + push).
+
+**3a — Candidats énumérés :**
+- **C1** : "sonnet lit le diff staged et rédige le message Conventional Commits" (descendre du model du caller à sonnet)
+- **C2** : "haiku vérifie les règles syntaxiques (type valide, impératif, 72 chars)" (descendre à haiku)
+
+**3b — Passage aux gates :**
+- C1 : volume input ≈ diff staged (souvent < 2k tokens sur un commit bien découpé) + output ≈ 50-500 tokens → **killed sur volume**
+- C2 : la vérification est déjà triviale inline, descente à haiku = overhead de spawn sans gain mesurable → **killed sur volume** (output < 100 tokens)
+
+**Verdict** : C0' NON — 2 candidats identifiés, tous deux killed sur volume. La fréquence haute (invocation avant chaque commit) ne compense pas.
 
 ### Étape 4 — Appliquer C1-C4 (turnlockisabilité)
 
@@ -118,9 +167,21 @@ Pas de *« je synthétise de mémoire »*.
 **C4 — Schémas de résultat stables**
 Chaque délégation retourne un JSON validable par Zod. Imposer un format JSON côté agent feuille est une précondition — sinon `consumePendingResult` ne peut pas typer.
 
-**Verdict C1-C4 :**
-- Les 4 OK → **turnlockisabilité faisable**
-- Au moins une échoue → **turnlockisabilité bloquée** ; indiquer laquelle et ce qu'il faut élucider avant
+#### Statuts possibles par Cx
+
+Chaque Cx se voit attribuer **un** des trois statuts :
+
+- **OK** — la condition tient en l'état actuel, sans intervention préalable
+- **OK-WITH-PRECONDITION** — la condition tiendra après une modification **triviale et bornée** du code existant (ex: formaliser un output JSON déjà 1-à-1 avec les champs existants, extraire 3 lignes mécaniques d'une phase hybride). La précondition doit être nommable en une phrase actionnable et ne change **pas** la fonction sémantique de la cible.
+- **KO** — la condition échoue et la levée demande un vrai travail (élucidation d'un couplage conversationnel caché, redesign d'une phase, refactor non-trivial). Turnlockisation bloquée tant que pas résolu.
+
+**Règle de distinction OK vs OK-WITH-PRECONDITION** : si la précondition tient en ≤ ~50 lignes de code avec aucun changement de contrat externe, c'est OK-WITH-PRECONDITION. Sinon, c'est KO.
+
+#### Verdict C1-C4
+
+- **Les 4 en OK** → *turnlockisabilité faisable sans précondition*
+- **Au moins un OK-WITH-PRECONDITION, zéro KO** → *turnlockisabilité faisable moyennant préconditions* (listées dans la section dédiée du format de sortie)
+- **Au moins un KO** → *turnlockisabilité bloquée par Cx* ; indiquer lequel et ce qu'il faut élucider/redesign avant
 
 ### Étape 5 — Produire le verdict
 
@@ -132,7 +193,7 @@ Toujours produire ce bloc structuré, dans cet ordre :
 ## Verdict turnlockability — <nom de la cible>
 
 **Décision** : turnlock obligatoire | turnlock opportuniste | non-justifié (skill pré-turnlock + script) | bloqué par turnlockisabilité
-**Turnlockisabilité** : faisable | bloquée par Cx (…)
+**Turnlockisabilité** : faisable | faisable moyennant préconditions | bloquée par Cx (…)
 
 ## Scope évalué (pile d'orchestration)
 
@@ -151,19 +212,39 @@ Toujours produire ce bloc structuré, dans cet ordre :
 
 (Évaluer seulement si C0 = NON)
 
-- **Étape cheap déléguable** : OUI / NON + laquelle
-- **Volume par étape ≥ 2-5k tokens** : OUI / NON + estimation
-- **Skill invoqué fréquemment** : OUI / NON + signal (présence dans CLAUDE.md, chaînage auto, etc.)
-- **Coché (AND des 3)** : OUI / NON
+**3a — Candidats énumérés** :
+- **C1** : <description précise + cible haiku/sonnet/TS pur + pourquoi cheap>
+- **C2** : …
+- (Si aucun → noter explicitement "aucun candidat identifiable")
+
+**3b — Gates par candidat** :
+- **C1** : volume ≈ <X> tokens (PASS/FAIL 2-5k) ; fréquence ≈ <Y> (PASS/FAIL ROI) → **survit** / **killed sur <volume|fréquence>**
+- **C2** : …
+
+**Verdict C0'** : OUI (au moins 1 survivant) / NON (tous killed ou aucun candidat) — avec raison explicite
 
 ## C1-C4 — Turnlockisabilité
 
 (Évaluer seulement si C0 ou C0' = OUI)
 
-- **C1 Décomposabilité** : OK / KO — détail
-- **C2 Autonomie** : OK / KO — détail
-- **C3 Agrégation** : OK / KO — détail
-- **C4 Schémas** : OK / KO — détail
+Chaque Cx : **OK** | **OK-WITH-PRECONDITION** | **KO**.
+
+- **C1 Décomposabilité** : <statut> — détail (si OK-WITH-PRECONDITION : nommer la précondition en une phrase actionnable)
+- **C2 Autonomie** : <statut> — détail
+- **C3 Agrégation** : <statut> — détail
+- **C4 Schémas** : <statut> — détail
+
+## Préconditions à lever avant turnlockisation
+
+(Section affichée uniquement si au moins un Cx est OK-WITH-PRECONDITION. Consolide toutes les préconditions en checklist actionnable, dans l'ordre de levée recommandé.)
+
+- [ ] **<nom court>** (C<x>) — <action concrète en une phrase> | <cible: fichier/module> | <estimation: ≤N lignes ou bornée par scope>
+- [ ] **<nom court>** (C<x>) — …
+
+Chaque item doit être :
+- Un verbe d'action ("Formaliser la sortie JSON", "Extraire les 3 lignes mécaniques de la phase récolte", "Split la phase hybride 6")
+- Rattaché au Cx qui l'exige
+- Borné dans sa portée (pas de "refactor complet")
 
 ## Transformation projetée (si adoption)
 
@@ -178,17 +259,20 @@ Si décision = turnlock (obligatoire ou opportuniste) :
 ## Prochaine étape recommandée
 
 Une ligne, actionnable :
-- "Turnlockiser : commencer par extraire <agent feuille X>"
+- "Turnlockiser directement : commencer par <phase TS pure initiale>"
+- "Lever d'abord les préconditions <noms courts> (section ci-dessus), puis turnlockiser"
 - "Ne pas turnlockiser : ajouter un script bash `finalize` en sortie pour la mécanique"
-- "Élucider C2 avant de continuer : <quel couplage>"
+- "Débloquer C<x> avant tout : <quel couplage / quel redesign>"
 ```
 
 ## Règles de conduite
 
 - **Ne jamais deviner la structure d'une couche** sans avoir lu le fichier source. Si un skill/agent n'est pas accessible → le signaler, ne pas inventer.
 - **Citer les lignes précises** du skill/agent qui justifient un pattern B1/B2/B3 ou un échec de Cx. Pas d'affirmation en l'air.
+- **Jamais de citation de mémoire pour une memory utilisateur.** Avant de citer une entrée de mémoire (`~/.claude/projects/*/memory/*.md` ou équivalent) comme justification d'un argument, lire son contenu complet et vérifier que son champ d'application couvre réellement le skill/agent évalué. Beaucoup de memories ont des clauses d'exclusion ("Ne vaut PAS pour : ...") qui invalident leur portée sur le cas courant. Si la memory n'est pas lisible → ne pas la citer, argumenter sur les mérites propres du cas.
 - **Ne pas surestimer C0** : un skill qui enchaîne N étapes de jugement linéaires dans un même contexte n'est pas B1 (il n'y a pas de frontière de process). B1 implique **vraiment** une délégation à un ou plusieurs sub-agents/sub-skills avec agrégation mécanique.
-- **Ne pas précipiter C0'** : si la cible est invoquée rarement (< quelques fois par semaine) ou tous les steps sont de volume < 2k tokens, C0' ne passe pas même si hétérogénéité apparente.
+- **Ne pas précipiter C0'** : un verdict C0' NON doit obligatoirement passer par l'énumération (3a) des candidats de décomposition. Un "aucun candidat cheap" lâché sans avoir mentalement listé les options (haiku sur diff, sonnet sur classification, TS pur sur mécanique) est une évaluation paresseuse. Le bon format d'un NON est soit "aucun candidat identifiable après énumération", soit "candidat X killed sur volume/fréquence".
+- **Discipline OK-WITH-PRECONDITION** : utiliser ce statut pour les Cx dont la condition tient en l'état actuel moyennant un changement **trivial et borné** (≤ ~50 lignes, pas de changement de contrat externe). Ne pas en faire une cachette pour des refactors non-triviaux — si la précondition demande d'élucider un couplage caché, de redesigner une phase, ou touche plus que la cible évaluée, c'est KO, pas OK-WITH-PRECONDITION. Chaque précondition listée doit être nommable en une phrase d'action concrète et apparaître dans la section "Préconditions à lever" du verdict.
 - **Demander en cas d'ambiguïté** : fréquence d'invocation, volume typique, contraintes de déterminisme non documentées. Ne pas deviner.
 - **Ne pas coder la transformation** — uniquement l'évaluer et la projeter. La mise en œuvre est hors scope de ce skill.
 - **Si la cible est déjà turnlockisée** : signaler et sortir — rien à évaluer.
