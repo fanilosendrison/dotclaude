@@ -40,6 +40,11 @@ import { axisForRule } from "./lib/rule-mapping.ts";
 import { resolveScope, type ScopeMode } from "./lib/scope-resolver.ts";
 import { severityForRule } from "./lib/severity-defaults.ts";
 
+// Prepend the project-local node_modules/.bin so linters installed as
+// devDependencies (biome, eslint, etc.) are discoverable by `which` and by
+// Bun.spawn([toolName, ...]) without requiring a global install.
+process.env.PATH = `${process.cwd()}/node_modules/.bin:${process.env.PATH ?? ""}`;
+
 interface CliArgs {
 	scope: ScopeMode;
 	path: string | undefined;
