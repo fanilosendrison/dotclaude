@@ -50,6 +50,18 @@ Dans tous les cas : filtrer les fichiers source (skip `.md` doc pure, `.env`, `.
 
 Preparer un dossier de run `$RUN_DIR` (par defaut, un sous-dossier de `.claude/run/coding-standards/<pid>/`; en mode loop-clean, utiliser le `iter-*/` fourni par l'orchestrateur).
 
+### Ancrage du diff sur BASE_SHA
+
+Si `$LOOP_CLEAN_BASE_SHA` est defini dans l'environnement, la resolution interne de `--scope=diff` (par `coding-standards-scanner`) bascule de `git diff --name-only` + `git diff --cached --name-only` vers :
+
+```bash
+git diff "$LOOP_CLEAN_BASE_SHA" --name-only
+```
+
+Rationale : sans ancrage, si l'orchestrateur loop-clean fait des commits intermediaires (par ex. `LOOP_CLEAN_COMMIT_PER_ITER=1`), le working tree devient propre apres l'iteration et le scope `diff` retourne vide aux iterations suivantes — la boucle court-circuite. Avec l'ancrage, le scope reste stable sur la duree de la session : "fichiers modifies depuis le debut de la run".
+
+Si `LOOP_CLEAN_BASE_SHA` n'est pas defini (invocation manuelle hors loop-clean), comportement standalone : working tree + staged.
+
 ### Etape 2 — Passe mecanique (scanner)
 
 ```bash

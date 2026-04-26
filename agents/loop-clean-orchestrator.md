@@ -89,7 +89,7 @@ Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_CODING_STANDARDS>`.
 
 Invoquer le skill `coding-standards`, qui orchestre en interne :
 
-1. Résoudre le scope : lire `$LOOP_CLEAN_SCOPE` (émis par `prepare-iter`). `diff` → fichiers modifiés via `git diff --name-only` ; `all` → tout le repo.
+1. Résoudre le scope : lire `$LOOP_CLEAN_SCOPE` (émis par `prepare-iter`). `diff` → fichiers modifiés via `git diff "$LOOP_CLEAN_BASE_SHA" --name-only` (ancrage au début de la run, stable même si l'orchestrateur fait des commits intermédiaires) ; `all` → tout le repo. Le scanner CLI lit `LOOP_CLEAN_BASE_SHA` depuis l'env, aucun flag supplémentaire à passer.
 2. Passe mécanique : `bun ~/.claude/scripts/coding-standards-scanner/src/cli.ts --scope=$LOOP_CLEAN_SCOPE --output=$RUN_DIR/scanner.json`. Fail-open sur linters manquants (warning stderr, skip).
 3. Passe sémantique : dispatch en parallèle d'un sub-agent `coding-standards-file` par fichier (Sonnet 4.6 medium pinné dans le frontmatter). Chaque sub-agent écrit son JSON à `$RUN_DIR/files/file-<basename>-<hash>.json` via `CODING_STANDARDS_FILE_JSON_OUT`. Les scopes mécanique et sémantique sont **disjoints** — le prompt de l'agent exclut explicitement toutes les règles couvertes par le scanner.
 4. Consolidation : `bun ~/.claude/scripts/coding-standards-consolidate/src/cli.ts --scanner-json=$RUN_DIR/scanner.json --files-json-dir=$RUN_DIR/files/ --output=$LOOP_CLEAN_JSON_OUT`. Merge, dedup défensif par `id`, recalcul de `summary` et `blocking`, validation schéma (HARD FAIL / exit 4 sur JSON invalide).
@@ -104,7 +104,7 @@ Le skill gère toute l'orchestration. L'orchestrateur loop-clean n'a plus à inl
 Exporter `LOOP_CLEAN_JSON_OUT=<valeur de LOOP_CLEAN_JSON_OUT_SENIOR_REVIEW>`.
 
 **Exécuter la procédure complète du skill senior-review** :
-1. Identifier les fichiers à reviewer selon `$LOOP_CLEAN_SCOPE` (émis par `prepare-iter`) : `diff` → `git diff --name-only` (post-modification) ; `all` → tout le repo source.
+1. Identifier les fichiers à reviewer selon `$LOOP_CLEAN_SCOPE` (émis par `prepare-iter`) : `diff` → `git diff "$LOOP_CLEAN_BASE_SHA" --name-only` (ancrage au début de la run, stable à travers les itérations même si l'orchestrateur commit en cours de boucle) ; `all` → tout le repo source.
 2. Lancer un sub-agent `senior-review-file` par fichier en parallèle :
    ```
    Agent({

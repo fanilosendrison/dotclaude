@@ -14,8 +14,12 @@ export interface ScopeOptions {
 /**
  * Resolve the list of files to scan based on the scope mode.
  *
- * - diff : `git diff --name-only` + `git diff --cached --name-only` merged, unique.
- *          Falls back to empty list if not a git repo.
+ * - diff : when `LOOP_CLEAN_BASE_SHA` is set in the environment, return files
+ *          changed since that SHA (`git diff $BASE_SHA --name-only`), so the
+ *          scope stays stable across iterations even if intermediate commits
+ *          advance HEAD. Otherwise, fall back to working-tree + staged
+ *          (`git diff --name-only` + `git diff --cached --name-only`).
+ *          Returns an empty list outside a git repo.
  * - all  : walk the repo from cwd, skip `node_modules`, `.git`, and
  *          `dist`/`build` dirs. Returns repo-relative paths.
  * - path : walk the given subtree the same way.
@@ -38,30 +42,43 @@ export async function resolveScope(
 }
 
 async function resolveDiffScope(cwd: string): Promise<string[]> {
+	const baseSha = process.env.LOOP_CLEAN_BASE_SHA?.trim();
+	if (baseSha) {
+		return await runGitNameOnly(["git", "diff", baseSha, "--name-only"], cwd);
+	}
 	const files = new Set<string>();
-	const add = async (cmd: string[]): Promise<void> => {
-		try {
-			const proc = Bun.spawn(cmd, {
-				stdout: "pipe",
-				stderr: "pipe",
-				cwd,
-			});
-			const [stdout, exitCode] = await Promise.all([
-				new Response(proc.stdout).text(),
-				proc.exited,
-			]);
-			if (exitCode !== 0) return;
-			for (const line of stdout.split("\n")) {
-				const trimmed = line.trim();
-				if (trimmed) files.add(trimmed);
-			}
-		} catch {
-			// Not a git repo / git missing → ignore.
-		}
-	};
-	await add(["git", "diff", "--name-only"]);
-	await add(["git", "diff", "--cached", "--name-only"]);
+	const both = await Promise.all([
+		runGitNameOnly(["git", "diff", "--name-only"], cwd),
+		runGitNameOnly(["git", "diff", "--cached", "--name-only"], cwd),
+	]);
+	for (const list of both) {
+		for (const f of list) files.add(f);
+	}
 	return [...files];
+}
+
+async function runGitNameOnly(cmd: string[], cwd: string): Promise<string[]> {
+	try {
+		const proc = Bun.spawn(cmd, {
+			stdout: "pipe",
+			stderr: "pipe",
+			cwd,
+		});
+		const [stdout, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			proc.exited,
+		]);
+		if (exitCode !== 0) return [];
+		const out: string[] = [];
+		for (const line of stdout.split("\n")) {
+			const trimmed = line.trim();
+			if (trimmed) out.push(trimmed);
+		}
+		return out;
+	} catch {
+		// Not a git repo / git missing → ignore.
+		return [];
+	}
 }
 
 const SKIP_DIRS = new Set([

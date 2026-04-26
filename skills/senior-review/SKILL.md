@@ -49,7 +49,12 @@ Sinon, passer par `/loop-clean`.
 En l'absence de `LOOP_CLEAN_SCOPE` (invocation manuelle), le defaut est `diff`.
 
 Resolution concrete :
-- `LOOP_CLEAN_SCOPE=diff` → `git diff --name-only` + `git diff --cached --name-only`.
+- `LOOP_CLEAN_SCOPE=diff` :
+  - Si `$LOOP_CLEAN_BASE_SHA` est defini → `git diff "$LOOP_CLEAN_BASE_SHA" --name-only`
+    (ancrage au debut de la run loop-clean — stable a travers les iterations
+    meme si l'orchestrateur fait des commits intermediaires).
+  - Sinon → `git diff --name-only` + `git diff --cached --name-only`
+    (working tree + staged, cas standalone).
 - `LOOP_CLEAN_SCOPE=all` → tous les fichiers source du repo (plus `specs/*.md`
   si applicable).
 
