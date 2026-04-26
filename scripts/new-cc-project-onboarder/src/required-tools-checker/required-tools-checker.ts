@@ -32,7 +32,18 @@ export async function checkPrerequisites(opts: {
     };
   }
 
-  const config: ToolsConfig = await Bun.file(opts.configPath).json();
+  const raw: unknown = await Bun.file(opts.configPath).json();
+  if (
+    raw === null ||
+    typeof raw !== "object" ||
+    !("tools" in raw) ||
+    !Array.isArray((raw as Record<string, unknown>).tools)
+  ) {
+    throw new Error(
+      `Invalid config at ${opts.configPath}: expected { tools: Array<{ name, install_command }> }`,
+    );
+  }
+  const config = raw as ToolsConfig;
 
   const tools: Record<string, ToolStatus> = {};
   const missing: MissingTool[] = [];
