@@ -2,7 +2,16 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { checkPrerequisites } from "../../src/required-tools-checker/required-tools-checker";
+import {
+  checkPrerequisites,
+  renderHumanReport,
+  type CheckResult,
+} from "../../src/required-tools-checker/required-tools-checker";
+
+const SCRIPT_PATH = join(
+  import.meta.dir,
+  "../../src/required-tools-checker/required-tools-checker.ts",
+);
 
 const REAL_CONFIG = join(
   import.meta.dir,
@@ -103,4 +112,93 @@ test("JSON contract: required keys present in happy path", async () => {
     expect(result).toHaveProperty("missing");
     expect(Array.isArray(result.missing)).toBe(true);
   }
+});
+
+test("renderHumanReport: ok status renders ✅ marker, OS label, and version table", () => {
+  const result: CheckResult = {
+    status: "ok",
+    os: { platform: "darwin", arch: "arm64", label: "darwin arm64" },
+    tools: { git: { found: true, version: "git version 2.42.0" } },
+    missing: [],
+  };
+
+  const out = renderHumanReport(result);
+
+  expect(out).toContain("✅");
+  expect(out).toContain("darwin arm64");
+  expect(out).toContain("| git | git version 2.42.0 |");
+  expect(out).not.toContain("Manquants");
+});
+
+test("renderHumanReport: missing_tools renders ❌ marker and install commands", () => {
+  const result: CheckResult = {
+    status: "missing_tools",
+    os: { platform: "darwin", arch: "arm64", label: "darwin arm64" },
+    tools: {
+      git: { found: true, version: "git version 2.42.0" },
+      gh: { found: false, version: null },
+    },
+    missing: [{ name: "gh", install_command: "echo install gh" }],
+  };
+
+  const out = renderHumanReport(result);
+
+  expect(out).toContain("❌");
+  expect(out).toContain("Trouvés");
+  expect(out).toContain("| git | git version 2.42.0 |");
+  expect(out).toContain("Manquants");
+  expect(out).toContain("| gh | `echo install gh` |");
+});
+
+test("renderHumanReport: unsupported_platform renders ⚠️ marker, label, and macOS-only mention", () => {
+  const result: CheckResult = {
+    status: "unsupported_platform",
+    os: { platform: "linux", arch: "x64", label: "linux x64" },
+  };
+
+  const out = renderHumanReport(result);
+
+  expect(out).toContain("⚠️");
+  expect(out).toContain("linux x64");
+  expect(out).toContain("darwin");
+});
+
+test("CLI smoke: default invocation outputs human report on stdout (contains a status marker)", () => {
+  const proc = Bun.spawnSync({
+    cmd: ["bun", SCRIPT_PATH],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const stdout = new TextDecoder().decode(proc.stdout);
+
+  expect(stdout).toMatch(/[✅❌⚠️]/);
+  expect(() => JSON.parse(stdout)).toThrow();
+});
+
+test("CLI smoke: --format json outputs parseable JSON with status field", () => {
+  const proc = Bun.spawnSync({
+    cmd: ["bun", SCRIPT_PATH, "--format", "json"],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const stdout = new TextDecoder().decode(proc.stdout);
+  const parsed = JSON.parse(stdout);
+
+  expect(parsed).toHaveProperty("status");
+  expect(["ok", "missing_tools", "unsupported_platform"]).toContain(parsed.status);
+});
+
+test("CLI smoke: --format with invalid value exits with code 2 and writes to stderr", () => {
+  const proc = Bun.spawnSync({
+    cmd: ["bun", SCRIPT_PATH, "--format", "yaml"],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  expect(proc.exitCode).toBe(2);
+  const stderr = new TextDecoder().decode(proc.stderr);
+  expect(stderr).toContain("--format");
+  expect(stderr).toContain("yaml");
 });

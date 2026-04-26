@@ -69,11 +69,66 @@ export async function checkPrerequisites(opts: {
   };
 }
 
+export function renderHumanReport(result: CheckResult): string {
+  if (result.status === "unsupported_platform") {
+    return [
+      `⚠️  Plateforme non supportée : ${result.os.label}`,
+      `required-tools-checker ne couvre que macOS (\`darwin\`).`,
+    ].join("\n");
+  }
+
+  const header =
+    result.status === "ok"
+      ? `✅ Required tools — tous présents (${result.os.label})`
+      : `❌ Required tools — outils manquants (${result.os.label})`;
+
+  const lines: string[] = [header, ""];
+
+  const foundEntries = Object.entries(result.tools).filter(
+    (entry): entry is [string, { found: true; version: string }] => entry[1].found,
+  );
+
+  if (foundEntries.length > 0) {
+    lines.push("**Trouvés**", "", "| Tool | Version |", "|------|---------|");
+    for (const [name, status] of foundEntries) {
+      lines.push(`| ${name} | ${status.version} |`);
+    }
+    lines.push("");
+  }
+
+  if (result.missing.length > 0) {
+    lines.push("**Manquants**", "", "| Tool | Install command |", "|------|-----------------|");
+    for (const m of result.missing) {
+      lines.push(`| ${m.name} | \`${m.install_command}\` |`);
+    }
+  }
+
+  return lines.join("\n").trimEnd();
+}
+
+type Format = "human" | "json";
+
+function parseFormat(argv: string[]): Format {
+  const idx = argv.indexOf("--format");
+  if (idx === -1) return "human";
+  const value = argv[idx + 1];
+  if (value !== "human" && value !== "json") {
+    process.stderr.write(
+      `error: --format expects "human" or "json", got ${value === undefined ? "(missing)" : `"${value}"`}\n`,
+    );
+    process.exit(2);
+  }
+  return value;
+}
+
 if (import.meta.main) {
+  const format = parseFormat(process.argv.slice(2));
   const result = await checkPrerequisites({
     configPath: join(import.meta.dir, "required-tools.json"),
     platform: process.platform,
   });
-  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  const output =
+    format === "json" ? JSON.stringify(result, null, 2) : renderHumanReport(result);
+  process.stdout.write(output + "\n");
   process.exit(result.status === "ok" ? 0 : 1);
 }
