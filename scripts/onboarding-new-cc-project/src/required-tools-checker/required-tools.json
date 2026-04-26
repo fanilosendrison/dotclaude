@@ -1,0 +1,7 @@
+{
+  "tools": [
+    { "name": "git", "install_command": "curl -sS https://webi.sh/git | sh" },
+    { "name": "gh",  "install_command": "curl -sS https://webi.sh/gh | sh" },
+    { "name": "bun", "install_command": "curl -fsSL https://bun.com/install | bash" }
+  ]
+}
