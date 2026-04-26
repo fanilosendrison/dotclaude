@@ -1,7 +1,8 @@
 # Runtime state — must never be versioned
 scripts/statusline/data/
 scripts/*/data/last_*
-.claude/run/
+**/.claude/run/
+**/.claude/settings.local.json
 
 # Dependencies + build artefacts
 node_modules/
