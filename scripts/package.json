@@ -2,7 +2,7 @@
 	"name": "scripts",
 	"type": "module",
 	"scripts": {
-		"test": "bun test auto-rename-session claude-code-ai statusline command-validator commit-msg-validator secret-scanner index-repo post-write-linter spec-drift lib/stack-tools lib/coding-standards-schema coding-standards-scanner coding-standards-consolidate onboarding-new-cc-project",
+		"test": "bun test auto-rename-session claude-code-ai statusline command-validator commit-msg-validator secret-scanner index-repo post-write-linter spec-drift lib/stack-tools lib/coding-standards-schema coding-standards-scanner coding-standards-consolidate new-cc-project-onboarder",
 		"auto-rename:start": "bun auto-rename-session/src/index.ts",
 		"auto-rename:rename-all": "bun auto-rename-session/src/rename-all.ts",
 		"auto-rename:test": "bun test auto-rename-session",
@@ -39,9 +39,9 @@
 		"spec-drift:cli": "node --experimental-strip-types spec-drift/src/spec-drift.ts",
 		"spec-drift:test": "bun test spec-drift",
 		"spec-drift:lint": "biome check --write spec-drift",
-		"onboarding-checker:cli": "bun onboarding-new-cc-project/src/required-tools-checker/required-tools-checker.ts",
-		"onboarding-checker:test": "bun test onboarding-new-cc-project",
-		"onboarding-checker:lint": "biome check --write onboarding-new-cc-project",
+		"onboarder:cli": "bun new-cc-project-onboarder/src/required-tools-checker/required-tools-checker.ts",
+		"onboarder:test": "bun test new-cc-project-onboarder",
+		"onboarder:lint": "biome check --write new-cc-project-onboarder",
 		"lint": "biome check --write .",
 		"format": "biome format --write ."
 	},

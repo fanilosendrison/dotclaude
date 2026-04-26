@@ -5,14 +5,14 @@ description: Vérifie que les outils requis par claude-project-onboarder sont in
 
 # Checking Required Tools (CC project onboarder)
 
-Wrapper minimal autour de `~/.claude/scripts/onboarding-new-cc-project/src/required-tools-checker/required-tools-checker.ts`.
+Wrapper minimal autour de `~/.claude/scripts/new-cc-project-onboarder/src/required-tools-checker/required-tools-checker.ts`.
 
 ## Workflow
 
 1. Lancer la commande :
 
    ```bash
-   bun ~/.claude/scripts/onboarding-new-cc-project/src/required-tools-checker/required-tools-checker.ts
+   bun ~/.claude/scripts/new-cc-project-onboarder/src/required-tools-checker/required-tools-checker.ts
    ```
 
 2. Afficher le stdout tel quel à l'utilisateur (le script produit déjà un rapport humain markdown).
