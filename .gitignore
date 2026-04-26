@@ -3,6 +3,7 @@ scripts/statusline/data/
 scripts/*/data/last_*
 **/.claude/run/
 **/.claude/settings.local.json
+**/.claude/worktrees/
 
 # Dependencies + build artefacts
 node_modules/
