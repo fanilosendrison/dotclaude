@@ -253,7 +253,7 @@ describe("phaseInstall", () => {
 		// each job's prompt is isolated to its own tool
 		expect(ghJob.prompt).not.toContain("boom-bun");
 
-		expect(call.resumeAt).toBe("consume_agent_result");
+		expect(call.resumeAt).toBe("consume-agent-result");
 		expect(call.nextState.install_results).toBeDefined();
 	});
 });
