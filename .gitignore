@@ -4,6 +4,7 @@ scripts/*/data/last_*
 **/.claude/run/
 **/.claude/settings.local.json
 **/.claude/worktrees/
+**/.turnlock/
 
 # Dependencies + build artefacts
 node_modules/
