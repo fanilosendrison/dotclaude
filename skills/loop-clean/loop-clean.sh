@@ -978,21 +978,53 @@ cmd_finalize() {
 		fi
 	fi
 
-	# Advance the sticky base-sha to HEAD on a clean exit (no findings AND no
-	# regression). Subsequent /loop-clean runs in this repo will then re-anchor
-	# from HEAD, so the next chantier's diff scope is fresh — no re-auditing
-	# everything that was already driven to CLEAN. On non-CLEAN exits we
-	# deliberately leave the sticky in place so unresolved findings stay in
-	# scope for the next run.
+	# Advance the sticky base-sha to HEAD when the audit is "done" — meaning
+	# either no findings remain (EXIT_CLEAN) or every remaining finding has
+	# been handled (fix-now applied, backlogged, escalated, or sent to the
+	# design queue). The latter case lets oscillation/ceiling exits also
+	# advance when the loop stalled only because all leftovers are already
+	# tracked elsewhere — re-auditing them next run would just rediscover
+	# items that are already on a list. Regressions (final_exit != 0)
+	# never advance.
 	local sticky_note=""
-	if [[ "$last_action" == "EXIT_CLEAN" && "$final_exit" == 0 ]]; then
-		local sticky_path new_sha
-		if sticky_path=$(_session_base_sha_path 2>/dev/null) \
-			&& new_sha=$(git rev-parse HEAD 2>/dev/null) \
-			&& [[ -n "$new_sha" ]]; then
-			mkdir -p "$(dirname "$sticky_path")"
-			echo "$new_sha" > "$sticky_path"
-			sticky_note=$'\n\nSticky base-sha advanced to '"$new_sha"' (CLEAN exit).'
+	if [[ "$final_exit" == 0 ]]; then
+		local last_findings=0 handled_at_last_fb=0 latest_fb_json="" advance_reason=""
+		local last_dec
+		last_dec=$(ls -1 "$RUN_DIR"/iter-*/decision.json 2>/dev/null | sort | tail -1)
+		[[ -f "$last_dec" ]] \
+			&& last_findings=$(jq '.findings_count // 0' "$last_dec")
+
+		# Latest iter that actually ran fix-or-backlog (its outputs tell us how
+		# many findings were handled at the most recent triage point).
+		local fb_candidate
+		while IFS= read -r fb_candidate; do
+			[[ -f "$fb_candidate" ]] && latest_fb_json="$fb_candidate"
+		done < <(ls -1 "$RUN_DIR"/iter-*/fix-or-backlog.json 2>/dev/null | sort)
+		if [[ -n "$latest_fb_json" ]]; then
+			handled_at_last_fb=$(jq '
+				((.fix_now_applied   // []) | length) +
+				((.backlog_added     // []) | length) +
+				((.escalated         // []) | length) +
+				((.design_queue_added// []) | length)
+			' "$latest_fb_json")
+		fi
+
+		if [[ "$last_findings" -eq 0 ]]; then
+			advance_reason="CLEAN: 0 findings"
+		elif [[ "$handled_at_last_fb" -ge "$last_findings" ]] \
+				&& [[ -n "$latest_fb_json" ]]; then
+			advance_reason="all $last_findings finding(s) handled (fix/backlog/escalate/design-queue)"
+		fi
+
+		if [[ -n "$advance_reason" ]]; then
+			local sticky_path new_sha
+			if sticky_path=$(_session_base_sha_path 2>/dev/null) \
+				&& new_sha=$(git rev-parse HEAD 2>/dev/null) \
+				&& [[ -n "$new_sha" ]]; then
+				mkdir -p "$(dirname "$sticky_path")"
+				echo "$new_sha" > "$sticky_path"
+				sticky_note=$'\n\nSticky base-sha advanced to '"$new_sha"' ('"$advance_reason"').'
+			fi
 		fi
 	fi
 
