@@ -55,3 +55,37 @@ Agent({
 l'agent decider (determinisme).
 
 Presenter a l'utilisateur le rapport markdown retourne par l'agent, tel quel.
+
+## Sticky `BASE_SHA` (mode `diff`)
+
+Le `BASE_SHA` qui sert d'ancre au scope `diff` est **persistant par repo**, hors
+de `$RUN_DIR/<PID>/` (volatile). Il est stocke dans :
+
+```
+~/.claude/run/loop-clean/sessions/<repo-id>/base-sha
+```
+
+ou `<repo-id>` est un hash du `git rev-parse --show-toplevel`.
+
+**Resolution au premier `init`** (sticky absent ou invalide) :
+- `merge-base origin/<default-branch> HEAD` si distinct de HEAD
+  (couvre feature branches et worktrees backlog-crush / backlog-deep-crush)
+- Sinon `HEAD` (cas main direct deja synchronise avec origin)
+
+**Inits suivants** : reutilise le sticky tant qu'il reste un ancetre de HEAD.
+Cela garantit que des commits / push intermediaires n'avancent PAS l'ancre :
+le scope reste l'ensemble du chantier en cours.
+
+**Reinitialisation manuelle** :
+
+```bash
+bash skills/loop-clean/loop-clean.sh reset                  # drop le sticky
+bash skills/loop-clean/loop-clean.sh reset --from HEAD~3    # ancre N commits en arriere
+bash skills/loop-clean/loop-clean.sh reset --from <sha>     # ancre sur un sha precis
+```
+
+A utiliser quand le sticky est trop vieux (chantier termine) ou quand le
+scope `diff` ressort vide alors qu'on attend des fichiers (typique du cas
+"Claude a commit + push avant le premier `/loop-clean`" : le sticky a ete
+pose sur HEAD post-commit, donc `--from HEAD~N` permet de remonter avant
+les commits a auditer).

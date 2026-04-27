@@ -47,6 +47,66 @@ _sha256() {
 	fi
 }
 
+# Path to the per-repo sticky base-sha file. The sticky lives outside
+# $RUN_DIR (which is volatile, keyed on PPID) so that successive /loop-clean
+# invocations within the same chantier reuse the same base-sha — even after
+# commits/pushes advance HEAD.
+#
+# Keyed on a hash of the repo toplevel so worktrees and unrelated clones
+# don't share state. Returns non-zero (and emits nothing) outside a git repo.
+_session_base_sha_path() {
+	local repo_root repo_id
+	repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+	repo_id=$(printf '%s' "$repo_root" | _sha256 | cut -c1-12)
+	echo "$HOME/.claude/run/loop-clean/sessions/$repo_id/base-sha"
+}
+
+# Auto-computed base-sha for when there is no sticky yet:
+#   merge-base origin/<default-branch> HEAD   (if that resolves and != HEAD)
+#   else HEAD
+# The merge-base form covers feature branches and orchestrator worktrees
+# (backlog-crush, backlog-deep-crush) — the diff includes everything
+# committed on the branch since divergence.
+_compute_auto_base_sha() {
+	local default_branch default_ref base head_sha
+	default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
+		| sed 's@^refs/remotes/origin/@@' || true)
+	[[ -z "$default_branch" ]] && default_branch="main"
+	default_ref="origin/$default_branch"
+	head_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	if git rev-parse --verify "$default_ref" >/dev/null 2>&1 \
+		&& base=$(git merge-base "$default_ref" HEAD 2>/dev/null) \
+		&& [[ -n "$base" && "$base" != "$head_sha" ]]; then
+		echo "$base"
+		return 0
+	fi
+	echo "$head_sha"
+}
+
+# Resolve the sticky base-sha for the current repo:
+#   - if a persisted sticky exists AND is still an ancestor of HEAD, reuse it
+#   - else compute a fresh one via _compute_auto_base_sha and persist it
+# Returns "" outside a git repo.
+_resolve_sticky_base_sha() {
+	local sticky_path candidate
+	sticky_path=$(_session_base_sha_path 2>/dev/null) || { echo ""; return 0; }
+	if [[ -f "$sticky_path" ]]; then
+		candidate=$(cat "$sticky_path" 2>/dev/null || echo "")
+		if [[ -n "$candidate" ]] \
+			&& git cat-file -e "$candidate" 2>/dev/null \
+			&& git merge-base --is-ancestor "$candidate" HEAD 2>/dev/null; then
+			echo "$candidate"
+			return 0
+		fi
+	fi
+	candidate=$(_compute_auto_base_sha 2>/dev/null || echo "")
+	if [[ -n "$candidate" ]]; then
+		mkdir -p "$(dirname "$sticky_path")"
+		echo "$candidate" > "$sticky_path"
+	fi
+	echo "$candidate"
+}
+
 # Walk up from cwd to find STACK_EVAL.yaml. Emits its absolute path on stdout,
 # or empty string if not found. Factored out of _capture_baseline and
 # _resolve_test_command to avoid duplicating the walk-up pattern.
@@ -233,7 +293,8 @@ cmd_init() {
 	_cleanup_old_runs
 
 	local base_sha
-	if base_sha=$(git rev-parse HEAD 2>/dev/null); then
+	base_sha=$(_resolve_sticky_base_sha 2>/dev/null || echo "")
+	if [[ -n "$base_sha" ]]; then
 		echo "$base_sha" > "$RUN_DIR/base-sha"
 	else
 		echo "" > "$RUN_DIR/base-sha"
@@ -245,17 +306,28 @@ cmd_init() {
 
 	# In diff mode, warn upfront if there is nothing to audit. The loop still
 	# runs (it will exit CLEAN at iter 0) — this just tells the user their
-	# invocation probably wasn't what they wanted.
+	# invocation probably wasn't what they wanted. We compute the *real* scope
+	# (working tree + staged + everything since BASE_SHA) so a fresh commit
+	# made just before /loop-clean still triggers an audit.
 	if [[ "$scope_mode" == "diff" ]]; then
-		local diff_n cached_n
+		local diff_n cached_n base_n
 		diff_n=$(git diff --name-only 2>/dev/null | grep -c . || true)
 		cached_n=$(git diff --cached --name-only 2>/dev/null | grep -c . || true)
-		if [[ "${diff_n:-0}" -eq 0 && "${cached_n:-0}" -eq 0 ]]; then
-			cat >&2 <<'EOF'
-WARNING: mode=diff but git diff and git diff --cached are both empty.
-coding-standards and senior-review will have an empty scope and the loop will
-exit CLEAN at iter 0 without auditing any file. Run /loop-clean audit to
-audit the full codebase instead.
+		base_n=0
+		if [[ -n "$base_sha" ]]; then
+			base_n=$(git diff "$base_sha" --name-only 2>/dev/null | grep -c . || true)
+		fi
+		if [[ "${diff_n:-0}" -eq 0 && "${cached_n:-0}" -eq 0 && "${base_n:-0}" -eq 0 ]]; then
+			cat >&2 <<EOF
+WARNING: mode=diff but no files changed since BASE_SHA=${base_sha:-<none>} and
+working tree / staged area are both empty. coding-standards and senior-review
+will have an empty scope and the loop will exit CLEAN at iter 0 without
+auditing any file.
+
+If you expected a non-empty scope, the sticky base-sha may be stale or wrong:
+  bash $0 reset                         # drop the sticky; next init recomputes
+  bash $0 reset --from <ref>            # seed a new sticky (e.g. HEAD~3, sha)
+Or run /loop-clean audit for a full-codebase audit.
 EOF
 		fi
 	fi
@@ -731,6 +803,47 @@ cmd_decide() {
 	echo "$action"
 }
 
+cmd_reset() {
+	# Drops the per-repo sticky base-sha so the next `init` recomputes it.
+	# With --from <ref>, immediately seeds a new sticky pointing at <ref>.
+	local from_ref=""
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			--from=*) from_ref="${1#--from=}" ;;
+			--from)   shift; from_ref="${1:-}" ;;
+			*)
+				echo "ERROR: unknown reset arg: $1" >&2
+				exit 2
+				;;
+		esac
+		shift
+	done
+
+	local sticky_path
+	if ! sticky_path=$(_session_base_sha_path 2>/dev/null); then
+		echo "ERROR: not a git repo (or no toplevel); nothing to reset." >&2
+		exit 2
+	fi
+
+	if [[ -n "$from_ref" ]]; then
+		local sha
+		if ! sha=$(git rev-parse --verify "$from_ref^{commit}" 2>/dev/null); then
+			echo "ERROR: --from=$from_ref does not resolve to a commit." >&2
+			exit 2
+		fi
+		mkdir -p "$(dirname "$sticky_path")"
+		echo "$sha" > "$sticky_path"
+		echo "sticky base-sha set to $sha ($from_ref) at $sticky_path"
+	else
+		if [[ -f "$sticky_path" ]]; then
+			rm -f "$sticky_path"
+			echo "sticky base-sha cleared ($sticky_path); next /loop-clean init will recompute"
+		else
+			echo "no sticky base-sha to clear ($sticky_path)"
+		fi
+	fi
+}
+
 cmd_cleanup() {
 	_cleanup_old_runs
 	# Also report current state (what remains).
@@ -894,6 +1007,8 @@ Usage:
   loop-clean.sh commit-iter <N>    # commit iter N changes (opt-in via LOOP_CLEAN_COMMIT_PER_ITER=1)
   loop-clean.sh decide <N>
   loop-clean.sh finalize
+  loop-clean.sh reset [--from <ref>]  # drop the per-repo sticky base-sha
+                                      # (or seed it to <ref>); next init recomputes
   loop-clean.sh cleanup            # delete run dirs older than ${RETENTION_DAYS} days
   loop-clean.sh sweep-backlog      # archive [x] items older than \${LOOP_CLEAN_BACKLOG_ARCHIVE_DAYS:-30} days
 EOF
@@ -927,6 +1042,9 @@ main() {
 			;;
 		finalize)
 			cmd_finalize
+			;;
+		reset)
+			cmd_reset "$@"
 			;;
 		cleanup)
 			cmd_cleanup
