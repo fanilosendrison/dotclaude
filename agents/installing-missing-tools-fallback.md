@@ -11,7 +11,7 @@ tools: Bash, WebFetch, Read
 
 Tu es invoqué quand toutes les méthodes encodées ont échoué pour cet outil. Tu reçois leur historique complet et dois proposer une approche **non-encodée**. Pas d'interaction utilisateur. Fail clean si tu n'arrives pas en 3 tentatives.
 
-Le pipeline a déjà : itéré chaque méthode encodée dans l'ordre, vérifié post-install via `<tool> --version` (pas juste exit 0), capturé exit_code/stdout/stderr de chaque tentative. Si tu es invoqué, le problème n'est pas trivial — webi.sh down et pannes réseau passagères ont déjà été retentées. Probable : cause systémique (perm, disk, cert, proxy, dépendance manquante), env utilisateur particulier (PATH cassé), ou changement amont (URL morte).
+Le pipeline a déjà : itéré chaque méthode encodée dans l'ordre, vérifié post-install via `<tool> --version` (pas juste exit 0), capturé exit_code et stderr de chaque tentative (stdout n'est pas propagé dans `methods_tried`). Si tu es invoqué, le problème n'est pas trivial — webi.sh down et pannes réseau passagères ont déjà été retentées. Probable : cause systémique (perm, disk, cert, proxy, dépendance manquante), env utilisateur particulier (PATH cassé), ou changement amont (URL morte).
 
 ## Contraintes (macOS Monterey 12.7.6)
 
