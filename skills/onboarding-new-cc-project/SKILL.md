@@ -1,9 +1,9 @@
 ---
-name: new-cc-project-onboarder
-description: Lance l'orchestrateur turnlock new-cc-project-onboarder qui vérifie les outils requis (git, gh, bun), les installe mécaniquement si manquants, délègue à un batch de sub-agents `installing-missing-tools-fallback` en cas d'échec mécanique, puis re-vérifie. Use when the user says "new-cc-project-onboarder", "onboard ce projet", "prépare la machine pour Claude Code", "install les prérequis", or any variant requesting host-machine bootstrapping for Claude Code project onboarding. Le main agent drive le protocole turnlock (parse stdout, dispatch sub-agents, écrit résultats, ré-invoque avec --resume) jusqu'à terminaison.
+name: onboarding-new-cc-project
+description: Lance l'orchestrateur turnlock `new-cc-project-onboarder` qui vérifie les outils requis (git, gh), les installe mécaniquement si manquants, délègue à un batch de sub-agents `installing-missing-tools-fallback` en cas d'échec mécanique, puis re-vérifie. Use when the user says "onboarding-new-cc-project", "onboard ce projet", "prépare la machine pour Claude Code", "install les prérequis", or any variant requesting host-machine bootstrapping for Claude Code project onboarding. Le main agent drive le protocole turnlock (parse stdout, dispatch sub-agents, écrit résultats, ré-invoque avec --resume) jusqu'à terminaison.
 ---
 
-# /new-cc-project-onboarder — turnlock host driver
+# /onboarding-new-cc-project — turnlock host driver
 
 Tu es le **host** d'un orchestrateur turnlock. Ton rôle : lancer le binaire, parser ses sorties protocolaires `@@TURNLOCK@@`, exécuter les délégations qu'il demande, et le ré-invoquer jusqu'à terminaison clean.
 
