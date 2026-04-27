@@ -126,4 +126,24 @@ describe("checkStaleness", () => {
 		// Clean up
 		await Bun.$`cd ${tempDir} && git checkout -- test.txt`.quiet();
 	});
+
+	it("should return STALE when an untracked file exists", async () => {
+		const first = await checkStaleness(tempDir);
+		const state: IndexState = {
+			treeHash: first.currentHash,
+			timestamp: new Date().toISOString(),
+			axisHashes: { code: "", specs: "", config: "", tests: "", scripts: "" },
+			version: 1,
+		};
+		await writeState(tempDir, state);
+
+		// Brand new file, never `git add`-ed
+		await writeFile(join(tempDir, "new-file.ts"), "export const x = 1;");
+
+		const result = await checkStaleness(tempDir);
+		expect(result.status).toBe("STALE");
+
+		// Clean up
+		await rm(join(tempDir, "new-file.ts"));
+	});
 });

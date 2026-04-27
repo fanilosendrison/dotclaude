@@ -1,4 +1,8 @@
-import { PROJECT_INDEX_FILE, SPEC_MANIFEST_FILE } from "./constants";
+import {
+	INDEX_STATE_FILE,
+	PROJECT_INDEX_FILE,
+	SPEC_MANIFEST_FILE,
+} from "./constants";
 import { readState } from "./state";
 
 /** Files written by the indexer — excluded from staleness comparison */
@@ -101,17 +105,19 @@ async function getTreeHash(cwd: string): Promise<string> {
 }
 
 /**
- * Check if working tree has unstaged or untracked changes.
- * `git diff --quiet` exits 1 if there are changes.
+ * Check if working tree has unstaged, staged-but-uncommitted, or untracked changes.
+ * `git status --porcelain` lists all of those. We filter out our own state file,
+ * which is intentionally untracked and not user content.
  */
 async function isWorkingTreeDirty(cwd: string): Promise<boolean> {
-	const proc = Bun.spawn(["git", "diff", "--quiet", "HEAD"], {
+	const proc = Bun.spawn(["git", "status", "--porcelain"], {
 		cwd,
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	const code = await proc.exited;
-	return code !== 0;
+	const output = await new Response(proc.stdout).text();
+	const lines = output.split("\n").filter((l) => l.length > 0);
+	return lines.some((line) => line.slice(3) !== INDEX_STATE_FILE);
 }
 
 /**
