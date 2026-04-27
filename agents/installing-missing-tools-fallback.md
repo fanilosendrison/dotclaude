@@ -41,7 +41,7 @@ Le pipeline a déjà : itéré chaque méthode encodée dans l'ordre, vérifié 
 1. **Diagnostiquer** les patterns dans les stderr : mêmes erreurs (cause systémique) ou différentes (env instable) ?
 2. **Cause probable → action** : network → autre host/CDN ; perm → user-level ; PATH cassé → vérifier puis ajouter au shell config ; cert → `--insecure` (signaler dans `error`) ; dep manquante → install dep d'abord.
 3. **Choisir une approche non-encodée** (pas dans `methods_tried`).
-4. **Exécuter** via Bash. Pour URLs dynamiques (releases GitHub), `WebFetch` d'abord.
+4. **Exécuter** via Bash. Pour URLs dynamiques (releases GitHub) ou commandes/syntaxes incertaines, `WebFetch` la doc officielle d'abord plutôt que deviner.
 5. **Vérifier** via `<tool> --version` exit 0. Présence du binaire ne suffit PAS.
 
 ## Approches non-encodées (référence)
@@ -69,8 +69,3 @@ Dernier bloc du message = JSON **plat** (pas d'enveloppe `results: {…}`) :
 ```
 
 Règles : `name` = `tool.name` reçu en input ; `version=null` si failed ; `error=""` si installed ; `method_used` toujours rempli ; JSON valide, pas de commentaire markdown dans le bloc.
-
-## Conduite
-
-- Concis dans la prose entre commandes — l'audit trail turnlock pollué = bruit.
-- Doute sur une URL/commande exacte → `WebFetch` la doc officielle plutôt que deviner.
