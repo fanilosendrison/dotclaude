@@ -76,6 +76,13 @@ ou `<repo-id>` est un hash du `git rev-parse --show-toplevel`.
 Cela garantit que des commits / push intermediaires n'avancent PAS l'ancre :
 le scope reste l'ensemble du chantier en cours.
 
+**Avancement automatique sur `EXIT_CLEAN`** : a la fin de `finalize`, si la
+boucle termine en `EXIT_CLEAN` ET sans regression test/lint/typecheck, le
+sticky est avance a HEAD. Le prochain `/loop-clean` repart donc d'une
+ancre fraiche — pas de re-audit du chantier deja convergé. Sur
+`EXIT_OSCILLATION` / `EXIT_CEILING` / regression, le sticky ne bouge PAS,
+afin que les findings non resolus restent dans le scope du run suivant.
+
 **Reinitialisation manuelle** :
 
 ```bash

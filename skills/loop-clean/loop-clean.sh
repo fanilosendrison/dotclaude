@@ -978,6 +978,24 @@ cmd_finalize() {
 		fi
 	fi
 
+	# Advance the sticky base-sha to HEAD on a clean exit (no findings AND no
+	# regression). Subsequent /loop-clean runs in this repo will then re-anchor
+	# from HEAD, so the next chantier's diff scope is fresh — no re-auditing
+	# everything that was already driven to CLEAN. On non-CLEAN exits we
+	# deliberately leave the sticky in place so unresolved findings stay in
+	# scope for the next run.
+	local sticky_note=""
+	if [[ "$last_action" == "EXIT_CLEAN" && "$final_exit" == 0 ]]; then
+		local sticky_path new_sha
+		if sticky_path=$(_session_base_sha_path 2>/dev/null) \
+			&& new_sha=$(git rev-parse HEAD 2>/dev/null) \
+			&& [[ -n "$new_sha" ]]; then
+			mkdir -p "$(dirname "$sticky_path")"
+			echo "$new_sha" > "$sticky_path"
+			sticky_note=$'\n\nSticky base-sha advanced to '"$new_sha"' (CLEAN exit).'
+		fi
+	fi
+
 	cat <<EOF
 # loop-clean report
 
@@ -986,7 +1004,7 @@ cmd_finalize() {
 - Iterations executed: $total_iters
 - Final action: $last_action
 - Total fixes applied: $total_fixes
-- Total backlog items added: $total_backlog$regression_note
+- Total backlog items added: $total_backlog$regression_note$sticky_note
 
 Per-iteration decisions: $RUN_DIR/iter-*/decision.json
 Baseline: $RUN_DIR/baseline.json
