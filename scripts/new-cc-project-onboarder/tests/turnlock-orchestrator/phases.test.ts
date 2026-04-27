@@ -186,15 +186,27 @@ describe("phaseInstall", () => {
 	test("all installs OK → io.transition('recheck', state with install_results)", async () => {
 		const phase = createPhaseInstall({
 			installTools: async () => ({
-				gh: { ok: true, exit_code: 0, stdout: "installed", stderr: "" },
+				gh: {
+					ok: true,
+					attempts: [
+						{
+							id: "webi",
+							ok: true,
+							exit_code: 0,
+							stdout: "installed",
+							stderr: "",
+							verify_exit_code: 0,
+						},
+					],
+					successful_method_id: "webi",
+					version: "gh 2.86.0",
+				},
 			}),
 		});
 		const m = mockIO();
 		const state: State = {
 			...emptyState(),
-			missing_tools: [
-				{ name: "gh", install_command: "curl -sS https://webi.sh/gh | sh" },
-			],
+			missing_tools: [{ name: "gh" }],
 		};
 
 		await runPhase(phase, state, m.io);
@@ -204,31 +216,66 @@ describe("phaseInstall", () => {
 		expect(call.method).toBe("transition");
 		if (call.method !== "transition") return;
 		expect(call.nextPhase).toBe("recheck");
-		expect(call.nextState.install_results).toEqual({
-			gh: { ok: true, exit_code: 0, stdout: "installed", stderr: "" },
-		});
+		expect(call.nextState.install_results?.gh.ok).toBe(true);
+		expect(call.nextState.install_results?.gh.successful_method_id).toBe("webi");
 		expect(call.nextState.recheck_after_fallback).toBe(false);
 	});
 
-	test("at least 1 install fails → io.delegateAgentBatch with one job per failed tool", async () => {
+	test("at least 1 install fails (all methods exhausted) → io.delegateAgentBatch with full methods_tried history per failed tool", async () => {
 		const phase = createPhaseInstall({
 			installTools: async () => ({
-				gh: { ok: false, exit_code: 1, stdout: "", stderr: "boom-gh" },
-				bun: { ok: false, exit_code: 2, stdout: "", stderr: "boom-bun" },
-				git: { ok: true, exit_code: 0, stdout: "ok", stderr: "" },
+				gh: {
+					ok: false,
+					attempts: [
+						{
+							id: "webi",
+							ok: false,
+							exit_code: 1,
+							stdout: "",
+							stderr: "boom-webi-gh",
+						},
+						{
+							id: "github-releases",
+							ok: false,
+							exit_code: 2,
+							stdout: "",
+							stderr: "boom-releases-gh",
+						},
+					],
+				},
+				bun: {
+					ok: false,
+					attempts: [
+						{
+							id: "bun-sh",
+							ok: false,
+							exit_code: 1,
+							stdout: "",
+							stderr: "boom-bun",
+						},
+					],
+				},
+				git: {
+					ok: true,
+					attempts: [
+						{
+							id: "webi",
+							ok: true,
+							exit_code: 0,
+							stdout: "ok",
+							stderr: "",
+							verify_exit_code: 0,
+						},
+					],
+					successful_method_id: "webi",
+					version: "git 2.42.0",
+				},
 			}),
 		});
 		const m = mockIO();
 		const state: State = {
 			...emptyState(),
-			missing_tools: [
-				{ name: "gh", install_command: "curl -sS https://webi.sh/gh | sh" },
-				{
-					name: "bun",
-					install_command: "curl -fsSL https://bun.sh/install | bash",
-				},
-				{ name: "git", install_command: "curl -sS https://webi.sh/git | sh" },
-			],
+			missing_tools: [{ name: "gh" }, { name: "bun" }, { name: "git" }],
 		};
 
 		await runPhase(phase, state, m.io);
@@ -249,9 +296,20 @@ describe("phaseInstall", () => {
 		expect(ghJob).toBeDefined();
 		if (!ghJob) return;
 		expect(ghJob.prompt).toContain("gh");
-		expect(ghJob.prompt).toContain("boom-gh");
-		// each job's prompt is isolated to its own tool
+		// Both methods tried for gh appear in the prompt
+		expect(ghJob.prompt).toContain("webi");
+		expect(ghJob.prompt).toContain("boom-webi-gh");
+		expect(ghJob.prompt).toContain("github-releases");
+		expect(ghJob.prompt).toContain("boom-releases-gh");
+		// Each job's prompt is isolated to its own tool — bun's failure does not leak
 		expect(ghJob.prompt).not.toContain("boom-bun");
+
+		// The bun job has only its single attempted method
+		const bunJob = call.req.jobs.find((j) => j.id === "bun");
+		expect(bunJob).toBeDefined();
+		if (!bunJob) return;
+		expect(bunJob.prompt).toContain("bun-sh");
+		expect(bunJob.prompt).toContain("boom-bun");
 
 		expect(call.resumeAt).toBe("consume-agent-result");
 		expect(call.nextState.install_results).toBeDefined();
