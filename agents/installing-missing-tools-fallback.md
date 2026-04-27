@@ -93,11 +93,7 @@ Tu reçois un payload JSON pour **un seul outil** :
 - API GitHub releases : `curl -s https://api.github.com/repos/cli/cli/releases/latest | jq -r '.assets[] | select(.name | match("gh_.*_macOS_<arch>.zip")).browser_download_url'`. Télécharger, dézipper, placer dans `~/.local/bin`.
 - `<arch>` : `uname -m` → `x86_64` = `amd64`, `arm64` = `arm64`.
 
-### `bun`
-**Méthodes encodées** (déjà tentées) : `bun-sh`, `webi`.
-**Approches non-encodées** :
-- `npm install -g bun` (si npm est dispo via une autre install Node)
-- Tarball direct depuis https://github.com/oven-sh/bun/releases/latest (similaire à gh)
+> Note : `bun` n'apparaît pas ici car c'est un prérequis du script orchestrateur lui-même (le script ne pourrait pas tourner sans bun). Si bun est absent, le script ne démarre même pas — donc tu ne seras jamais invoqué pour installer bun.
 
 ## Format de sortie (strict — Zod-validé)
 

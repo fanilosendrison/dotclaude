@@ -46,7 +46,6 @@ test("happy path: real config on darwin → status ok, all tools found", async (
   expect(result.missing).toEqual([]);
   expect(result.tools.git.found).toBe(true);
   expect(result.tools.gh.found).toBe(true);
-  expect(result.tools.bun.found).toBe(true);
 
   if (result.tools.git.found) {
     expect(result.tools.git.version.length).toBeGreaterThan(0);

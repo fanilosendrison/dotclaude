@@ -1,7 +1,6 @@
 {
   "tools": [
     { "name": "git" },
-    { "name": "gh" },
-    { "name": "bun" }
+    { "name": "gh" }
   ]
 }
