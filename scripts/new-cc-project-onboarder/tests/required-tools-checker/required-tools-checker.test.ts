@@ -30,7 +30,7 @@ afterAll(async () => {
 
 async function writeConfig(
   filename: string,
-  tools: Array<{ name: string; install_command: string }>,
+  tools: Array<{ name: string }>,
 ): Promise<string> {
   const path = join(tmpDir, filename);
   await writeFile(path, JSON.stringify({ tools }), "utf8");
@@ -53,10 +53,8 @@ test("happy path: real config on darwin → status ok, all tools found", async (
   }
 });
 
-test("missing tool: fake binary → status missing_tools, install_command propagated", async () => {
-  const cfg = await writeConfig("only-fake.json", [
-    { name: "__fake_tool_xyz__", install_command: "echo install fake" },
-  ]);
+test("missing tool: fake binary → status missing_tools, name propagated", async () => {
+  const cfg = await writeConfig("only-fake.json", [{ name: "__fake_tool_xyz__" }]);
 
   const result = await checkPrerequisites({ configPath: cfg, platform: "darwin" });
 
@@ -64,19 +62,13 @@ test("missing tool: fake binary → status missing_tools, install_command propag
   if (result.status === "unsupported_platform") return;
 
   expect(result.missing.length).toBe(1);
-  expect(result.missing[0]).toEqual({
-    name: "__fake_tool_xyz__",
-    install_command: "echo install fake",
-  });
+  expect(result.missing[0]).toEqual({ name: "__fake_tool_xyz__" });
   expect(result.tools.__fake_tool_xyz__.found).toBe(false);
   expect(result.tools.__fake_tool_xyz__.version).toBeNull();
 });
 
 test("mix found/missing: git + fake → git found, fake missing", async () => {
-  const cfg = await writeConfig("mix.json", [
-    { name: "git", install_command: "noop" },
-    { name: "__fake__", install_command: "echo install fake" },
-  ]);
+  const cfg = await writeConfig("mix.json", [{ name: "git" }, { name: "__fake__" }]);
 
   const result = await checkPrerequisites({ configPath: cfg, platform: "darwin" });
 
@@ -130,7 +122,7 @@ test("renderHumanReport: ok status renders ✅ marker, OS label, and version tab
   expect(out).not.toContain("Manquants");
 });
 
-test("renderHumanReport: missing_tools renders ❌ marker and install commands", () => {
+test("renderHumanReport: missing_tools renders ❌ marker and missing tool list", () => {
   const result: CheckResult = {
     status: "missing_tools",
     os: { platform: "darwin", arch: "arm64", label: "darwin arm64" },
@@ -138,7 +130,7 @@ test("renderHumanReport: missing_tools renders ❌ marker and install commands",
       git: { found: true, version: "git version 2.42.0" },
       gh: { found: false, version: null },
     },
-    missing: [{ name: "gh", install_command: "echo install gh" }],
+    missing: [{ name: "gh" }],
   };
 
   const out = renderHumanReport(result);
@@ -147,7 +139,7 @@ test("renderHumanReport: missing_tools renders ❌ marker and install commands",
   expect(out).toContain("Trouvés");
   expect(out).toContain("| git | git version 2.42.0 |");
   expect(out).toContain("Manquants");
-  expect(out).toContain("| gh | `echo install gh` |");
+  expect(out).toContain("- gh");
 });
 
 test("renderHumanReport: unsupported_platform renders ⚠️ marker, label, and macOS-only mention", () => {

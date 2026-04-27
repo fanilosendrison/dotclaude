@@ -4,8 +4,8 @@ import { arch as nodeArch } from "node:os";
 import { join } from "node:path";
 
 export type ToolStatus = { found: true; version: string } | { found: false; version: null };
-export type MissingTool = { name: string; install_command: string };
-export type ToolsConfig = { tools: Array<{ name: string; install_command: string }> };
+export type MissingTool = { name: string };
+export type ToolsConfig = { tools: Array<{ name: string }> };
 
 export type CheckResult =
   | {
@@ -40,7 +40,7 @@ export async function checkPrerequisites(opts: {
     !Array.isArray((raw as Record<string, unknown>).tools)
   ) {
     throw new Error(
-      `Invalid config at ${opts.configPath}: expected { tools: Array<{ name, install_command }> }`,
+      `Invalid config at ${opts.configPath}: expected { tools: Array<{ name }> }`,
     );
   }
   const config = raw as ToolsConfig;
@@ -53,7 +53,7 @@ export async function checkPrerequisites(opts: {
 
     if (binPath === null) {
       tools[tool.name] = { found: false, version: null };
-      missing.push({ name: tool.name, install_command: tool.install_command });
+      missing.push({ name: tool.name });
       continue;
     }
 
@@ -68,7 +68,7 @@ export async function checkPrerequisites(opts: {
       tools[tool.name] = { found: true, version };
     } else {
       tools[tool.name] = { found: false, version: null };
-      missing.push({ name: tool.name, install_command: tool.install_command });
+      missing.push({ name: tool.name });
     }
   }
 
@@ -108,9 +108,9 @@ export function renderHumanReport(result: CheckResult): string {
   }
 
   if (result.missing.length > 0) {
-    lines.push("**Manquants**", "", "| Tool | Install command |", "|------|-----------------|");
+    lines.push("**Manquants**", "");
     for (const m of result.missing) {
-      lines.push(`| ${m.name} | \`${m.install_command}\` |`);
+      lines.push(`- ${m.name}`);
     }
   }
 

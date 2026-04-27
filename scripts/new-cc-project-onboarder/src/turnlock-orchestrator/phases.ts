@@ -5,7 +5,11 @@ import type {
 	CheckResult,
 	MissingTool,
 } from "../required-tools-checker/required-tools-checker";
-import type { InstallResults } from "../tools-installer/tools-installer";
+import { INSTALL_METHODS } from "../tools-installer/install-methods";
+import type {
+	InstallResults,
+	ToolConfig,
+} from "../tools-installer/tools-installer";
 
 // ---------------------------------------------------------------------------
 // Sub-agent result schema (each entry of the agent-batch fan-in)
@@ -76,10 +80,18 @@ export function createPhaseCheck(deps: {
 // ---------------------------------------------------------------------------
 
 export function createPhaseInstall(deps: {
-	installTools: (missing: MissingTool[]) => Promise<InstallResults>;
+	installTools: (tools: readonly ToolConfig[]) => Promise<InstallResults>;
 }): Phase<State> {
 	return async (state, io) => {
-		const results = await deps.installTools(state.missing_tools);
+		// Look up the install methods for each missing tool. A tool with no
+		// configured methods is passed through with `methods: []` so installTools
+		// records an empty attempts array (immediate failure → routed to agent).
+		const toolConfigs: ToolConfig[] = state.missing_tools.map((t) => ({
+			name: t.name,
+			methods: INSTALL_METHODS[t.name] ?? [],
+		}));
+
+		const results = await deps.installTools(toolConfigs);
 
 		const failedNames = Object.entries(results)
 			.filter(([, r]) => !r.ok)
@@ -93,16 +105,21 @@ export function createPhaseInstall(deps: {
 			});
 		}
 
+		// For each failed tool, hand the agent the FULL methods_tried history
+		// (every method, every stderr) so it can reason about the failure pattern
+		// rather than just the last attempt.
 		const jobs = failedNames.map((name) => {
-			const tool = state.missing_tools.find((t) => t.name === name);
 			const installResult = results[name];
 			const payload = {
 				os_label: state.os_label,
 				tool: {
 					name,
-					install_command_attempted: tool?.install_command ?? "",
-					exit_code: installResult.exit_code,
-					stderr: installResult.stderr,
+					methods_tried: installResult.attempts.map((a) => ({
+						id: a.id,
+						exit_code: a.exit_code,
+						stderr: a.stderr,
+						verify_exit_code: a.verify_exit_code,
+					})),
 				},
 			};
 			return {
