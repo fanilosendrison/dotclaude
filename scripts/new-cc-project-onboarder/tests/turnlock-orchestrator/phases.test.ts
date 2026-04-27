@@ -12,14 +12,19 @@ import {
 type IOCall =
 	| { method: "transition"; nextPhase: string; nextState: State }
 	| {
-			method: "delegateAgent";
-			req: { kind: "agent"; agentType: string; prompt: string; label: string };
+			method: "delegateAgentBatch";
+			req: {
+				kind: "agent-batch";
+				agentType: string;
+				jobs: ReadonlyArray<{ id: string; prompt: string }>;
+				label: string;
+			};
 			resumeAt: string;
 			nextState: State;
 	  }
 	| { method: "done"; output: unknown }
 	| { method: "fail"; error: Error }
-	| { method: "consumePendingResult"; schema: ZodSchema<unknown> };
+	| { method: "consumePendingBatchResults"; schema: ZodSchema<unknown> };
 
 interface MockIO {
 	calls: IOCall[];
@@ -40,16 +45,26 @@ function mockIO(pendingResult?: unknown): MockIO {
 		delegateSkill(): PhaseResult<State> {
 			throw new Error("delegateSkill not used by these phases");
 		},
-		delegateAgent(
-			req: { kind: "agent"; agentType: string; prompt: string; label: string },
+		delegateAgent(): PhaseResult<State> {
+			throw new Error("delegateAgent not used (use delegateAgentBatch)");
+		},
+		delegateAgentBatch(
+			req: {
+				kind: "agent-batch";
+				agentType: string;
+				jobs: ReadonlyArray<{ id: string; prompt: string }>;
+				label: string;
+			},
 			resumeAt: string,
 			nextState: State,
 		): PhaseResult<State> {
-			calls.push({ method: "delegateAgent", req, resumeAt, nextState });
+			calls.push({
+				method: "delegateAgentBatch",
+				req,
+				resumeAt,
+				nextState,
+			});
 			return sentinel("delegate");
-		},
-		delegateAgentBatch(): PhaseResult<State> {
-			throw new Error("delegateAgentBatch not used by these phases");
 		},
 		done<O>(output: O): PhaseResult<State> {
 			calls.push({ method: "done", output });
@@ -59,18 +74,18 @@ function mockIO(pendingResult?: unknown): MockIO {
 			calls.push({ method: "fail", error });
 			return sentinel("fail");
 		},
-		consumePendingResult<T>(schema: ZodSchema<T>): T {
+		consumePendingResult<T>(): T {
+			throw new Error("consumePendingResult not used (use batch variant)");
+		},
+		consumePendingBatchResults<T>(schema: ZodSchema<T>): readonly T[] {
 			calls.push({
-				method: "consumePendingResult",
+				method: "consumePendingBatchResults",
 				schema: schema as ZodSchema<unknown>,
 			});
 			if (pendingResult === undefined) {
-				throw new Error("mockIO: no pending result configured");
+				throw new Error("mockIO: no pending batch result configured");
 			}
-			return pendingResult as T;
-		},
-		consumePendingBatchResults<T>(): readonly T[] {
-			throw new Error("consumePendingBatchResults not used");
+			return pendingResult as readonly T[];
 		},
 		refreshLock(): void {},
 		logger: { event: () => {} } as unknown as PhaseIO<State>["logger"],
@@ -195,11 +210,12 @@ describe("phaseInstall", () => {
 		expect(call.nextState.recheck_after_fallback).toBe(false);
 	});
 
-	test("at least 1 install fails → io.delegateAgent to installing-missing-tools-fallback", async () => {
+	test("at least 1 install fails → io.delegateAgentBatch with one job per failed tool", async () => {
 		const phase = createPhaseInstall({
 			installTools: async () => ({
-				gh: { ok: false, exit_code: 1, stdout: "", stderr: "boom" },
-				bun: { ok: true, exit_code: 0, stdout: "ok", stderr: "" },
+				gh: { ok: false, exit_code: 1, stdout: "", stderr: "boom-gh" },
+				bun: { ok: false, exit_code: 2, stdout: "", stderr: "boom-bun" },
+				git: { ok: true, exit_code: 0, stdout: "ok", stderr: "" },
 			}),
 		});
 		const m = mockIO();
@@ -207,7 +223,11 @@ describe("phaseInstall", () => {
 			...emptyState(),
 			missing_tools: [
 				{ name: "gh", install_command: "curl -sS https://webi.sh/gh | sh" },
-				{ name: "bun", install_command: "curl -fsSL https://bun.sh/install | bash" },
+				{
+					name: "bun",
+					install_command: "curl -fsSL https://bun.sh/install | bash",
+				},
+				{ name: "git", install_command: "curl -sS https://webi.sh/git | sh" },
 			],
 		};
 
@@ -215,43 +235,63 @@ describe("phaseInstall", () => {
 
 		expect(m.calls).toHaveLength(1);
 		const call = m.calls[0];
-		expect(call.method).toBe("delegateAgent");
-		if (call.method !== "delegateAgent") return;
-		expect(call.req.kind).toBe("agent");
+		expect(call.method).toBe("delegateAgentBatch");
+		if (call.method !== "delegateAgentBatch") return;
+
+		expect(call.req.kind).toBe("agent-batch");
 		expect(call.req.agentType).toBe("installing-missing-tools-fallback");
-		expect(call.req.prompt).toContain("gh");
-		expect(call.req.prompt).toContain("boom");
-		expect(call.req.prompt).not.toContain("\"bun\"");
+		expect(call.req.jobs).toHaveLength(2); // only the 2 failed, not git
+
+		const ids = call.req.jobs.map((j) => j.id).sort();
+		expect(ids).toEqual(["bun", "gh"]);
+
+		const ghJob = call.req.jobs.find((j) => j.id === "gh");
+		expect(ghJob).toBeDefined();
+		if (!ghJob) return;
+		expect(ghJob.prompt).toContain("gh");
+		expect(ghJob.prompt).toContain("boom-gh");
+		// each job's prompt is isolated to its own tool
+		expect(ghJob.prompt).not.toContain("boom-bun");
+
 		expect(call.resumeAt).toBe("consume_agent_result");
 		expect(call.nextState.install_results).toBeDefined();
 	});
 });
 
 describe("phaseConsumeAgentResult", () => {
-	test("consumes pending result and transitions to recheck with agent_result populated", async () => {
+	test("consumes pending batch results and merges into state.agent_result indexed by tool name", async () => {
 		const phase = createPhaseConsumeAgentResult();
-		const pending = {
-			results: {
-				gh: {
-					status: "installed" as const,
-					version: "gh version 2.86.0",
-					method_used: "GitHub releases tarball darwin-amd64",
-					error: "",
-				},
+		const pending = [
+			{
+				name: "gh",
+				status: "installed" as const,
+				version: "gh version 2.86.0",
+				method_used: "GitHub releases tarball darwin-amd64",
+				error: "",
 			},
-		};
+			{
+				name: "bun",
+				status: "installed" as const,
+				version: "1.3.12",
+				method_used: "curl bun.sh/install",
+				error: "",
+			},
+		];
 		const m = mockIO(pending);
 
 		await runPhase(phase, emptyState(), m.io);
 
 		expect(m.calls.map((c) => c.method)).toEqual([
-			"consumePendingResult",
+			"consumePendingBatchResults",
 			"transition",
 		]);
 		const transitionCall = m.calls[1];
 		if (transitionCall.method !== "transition") return;
 		expect(transitionCall.nextPhase).toBe("recheck");
-		expect(transitionCall.nextState.agent_result).toEqual(pending);
+		expect(transitionCall.nextState.agent_result).toEqual({
+			gh: pending[0],
+			bun: pending[1],
+		});
 		expect(transitionCall.nextState.recheck_after_fallback).toBe(true);
 	});
 });
