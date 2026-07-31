@@ -19,3 +19,6 @@ package-lock.json
 
 # OS
 .DS_Store
+
+# Sub-agent artefacts (pi, codex)
+.pi-subagents/
