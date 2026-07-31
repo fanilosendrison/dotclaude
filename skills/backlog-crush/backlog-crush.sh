@@ -14,12 +14,17 @@
 
 set -euo pipefail
 
+if ! REPO_ROOT="$(git rev-parse --show-toplevel)"; then
+	echo "ERROR: backlog-crush must run inside a Git repository" >&2
+	exit 2
+fi
+readonly REPO_ROOT
 readonly MAX_CYCLES=40
 readonly MAJOR_BATCH_SIZE=5
 readonly STABILITY_WINDOW=3
-readonly RUN_DIR_BASE=".claude/run/backlog-crush"
+readonly RUN_DIR_BASE="$REPO_ROOT/.claude/run/backlog-crush"
 readonly RETENTION_DAYS=7
-readonly BACKLOG_FILE="backlog.md"
+readonly BACKLOG_FILE="$REPO_ROOT/backlog.md"
 readonly SCRIPT_NAME="backlog-crush"
 
 readonly SESSION_ID="${BACKLOG_CRUSH_SESSION_ID:-${PPID:-$$}}"

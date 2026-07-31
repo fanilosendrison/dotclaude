@@ -14,14 +14,19 @@
 
 set -euo pipefail
 
+if ! REPO_ROOT="$(git rev-parse --show-toplevel)"; then
+	echo "ERROR: backlog-deep-crush must run inside a Git repository" >&2
+	exit 2
+fi
+readonly REPO_ROOT
 readonly MAX_CYCLES="${DEEP_CRUSH_MAX_CYCLES:-80}"
 # Window=3 (match parent backlog-crush): window=2 was too aggressive given the
 # waterfall model (total can stay flat during tier transitions critical→major
 # →notable→minor→nit even when work is progressing).
 readonly STABILITY_WINDOW=3
-readonly RUN_DIR_BASE=".claude/run/backlog-deep-crush"
+readonly RUN_DIR_BASE="$REPO_ROOT/.claude/run/backlog-deep-crush"
 readonly RETENTION_DAYS=7
-readonly BACKLOG_FILE="backlog.md"
+readonly BACKLOG_FILE="$REPO_ROOT/backlog.md"
 readonly SCRIPT_NAME="backlog-deep-crush"
 
 # Batch sizes per severity. Priority enforced by cmd_next_item.

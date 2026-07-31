@@ -223,7 +223,7 @@ Exemple : `loop-clean-orchestrator` :
 ```yaml
 ---
 name: loop-clean-orchestrator
-description: Agent orchestrateur du skill /loop-clean. Exécute la boucle post-implémentation coding-standards → senior-review → dedup-codebase → spec-drift → fix-or-backlog jusqu'à convergence CLEAN, détection d'oscillation, ou plafond d'itérations. Model et effort pinnés pour qualité déterministe indépendante du model de session parent.
+description: Runs the four-source loop-clean protocol in strict order until a terminal decision, while preserving Git HEAD and index.
 color: blue
 model: claude-opus-4-6
 effort: xhigh

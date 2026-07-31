@@ -18,6 +18,11 @@
 #   cmd_record_skip, cmd_annotate_blocked, cmd_migrate_blocked,
 #   cmd_escalate_stuck, cmd_mark_done, cmd_sweep_resolved
 
+: "${REPO_ROOT:?backlog-common requires REPO_ROOT}"
+DESIGN_QUEUE_FILE="$REPO_ROOT/design-queue.md"
+BACKLOG_ARCHIVE_FILE="$REPO_ROOT/backlog.archive.md"
+readonly DESIGN_QUEUE_FILE BACKLOG_ARCHIVE_FILE
+
 # ---------------------------------------------------------------------------
 # Portability utilities
 # ---------------------------------------------------------------------------
@@ -70,7 +75,7 @@ _ensure_skip_counts() {
 # Ensure design-queue.md exists with standard header. Shared by
 # cmd_migrate_blocked and cmd_escalate_stuck (dedup items 1 & 3).
 _ensure_design_queue() {
-	local design_file="${1:-design-queue.md}"
+	local design_file="${1:-$DESIGN_QUEUE_FILE}"
 	if [[ ! -f "$design_file" ]]; then
 		cat > "$design_file" <<'EOF'
 # Design queue
@@ -154,7 +159,7 @@ cmd_annotate_blocked() {
 cmd_migrate_blocked() {
 	_require_jq
 	[[ -f "$BACKLOG_FILE" ]] || return 0
-	local design_file="design-queue.md"
+	local design_file="$DESIGN_QUEUE_FILE"
 	_ensure_design_queue "$design_file"
 
 	local today
@@ -226,7 +231,7 @@ cmd_escalate_stuck() {
 	[[ -f "$BACKLOG_FILE" ]] || return 0
 	local skip_file
 	skip_file="$(_skip_counts_file)"
-	local design_file="design-queue.md"
+	local design_file="$DESIGN_QUEUE_FILE"
 
 	local stuck_data
 	stuck_data=$(jq -r --argjson thr "$SKIP_THRESHOLD" \
@@ -339,7 +344,7 @@ cmd_mark_done() {
 # Reuses the "# Backlog archive" format shared with loop-clean's sweep-backlog.
 cmd_sweep_resolved() {
 	local src="$BACKLOG_FILE"
-	local dst="backlog.archive.md"
+	local dst="$BACKLOG_ARCHIVE_FILE"
 	local session_id="${SESSION_ID:-unknown}"
 
 	[[ -f "$src" ]] || { echo "0"; return 0; }
