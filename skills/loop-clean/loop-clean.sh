@@ -141,14 +141,20 @@ cmd_init() {
 	LOOP_CLEAN_DESIGN_QUEUE_PATH="$repository_root/design-queue.md"
 	mkdir -p "$run_dir"
 	_cleanup_old_runs
+	local baseline_file="$run_dir/git-baseline.json"
+	local baseline_tmp="$run_dir/.git-baseline.json.tmp.$$"
+
+	rm -f "$baseline_tmp"
+
 	if ! _run_protocol capture-git \
 		--repo-root "$repository_root" \
-		--output "$run_dir/git-baseline.json"; then
+		--output "$baseline_tmp"; then
+		rm -f "$baseline_tmp"
 		echo "ERROR: failed to capture Git invariants" >&2
 		exit 4
 	fi
-	local baseline_file="$run_dir/git-baseline.json"
-	if [[ ! -s "$baseline_file" ]] || ! jq -e '
+
+	if [[ ! -s "$baseline_tmp" ]] || ! jq -e '
 		.schema_version == 1
 		and (
 			.head == "UNBORN"
@@ -161,10 +167,13 @@ cmd_init() {
 			(.index_digest | type) == "string"
 			and (.index_digest | test("^[0-9a-f]{64}$"))
 		)
-	' "$baseline_file" >/dev/null; then
+	' "$baseline_tmp" >/dev/null; then
+		rm -f "$baseline_tmp"
 		echo "ERROR: protocol CLI did not produce a valid Git baseline" >&2
 		exit 4
 	fi
+
+	mv "$baseline_tmp" "$baseline_file"
 	printf '{"schema_version":1,"entries":[]}\n' > "$run_dir/deferred-findings.json"
 	if ! GIT_OPTIONAL_LOCKS=0 git -C "$repository_root" check-ignore -q -- ".claude/run/loop-clean/$session_id"; then
 		cat >&2 <<'WARNING'

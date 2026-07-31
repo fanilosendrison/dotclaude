@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { computeFindingId } from "../../src/findings/finding-id.ts";
@@ -570,5 +571,124 @@ describe("loop-clean controller E2E", () => {
 		});
 		expect(result.exitCode).toBe(2);
 		expect(result.stderr).toMatch(/unknown.*audit/i);
+	});
+
+	test("init rejects a malformed baseline and leaves no final file behind", async () => {
+		const root = await createLoopRepository();
+		const sessionId = `malformed-${process.pid}-${sessionCounter++}`;
+		const mockDir = await mkdtemp(join(tmpdir(), "loop-clean-mock-"));
+		externalDirectories.push(mockDir);
+
+		// Mock protocol CLI that writes invalid JSON (wrong schema_version)
+		const mockCli = join(mockDir, "mock-cli.ts");
+		await writeFile(
+			mockCli,
+			`const [, , command, ...rest] = process.argv;
+const args: Record<string, string> = {};
+for (let i = 0; i < rest.length; i++) {
+  if (rest[i] === "--output") args.output = rest[++i];
+  else if (rest[i] === "--repo-root") args["repo-root"] = rest[++i];
+}
+if (command === "capture-git" && args.output) {
+  await Bun.write(args.output, JSON.stringify({ schema_version: 99, head: "UNBORN", index_digest: "0000000000000000000000000000000000000000000000000000000000000000" }));
+}
+`,
+		);
+		await chmod(mockCli, 0o755);
+
+		const result = await runProcess(["bash", controller, "init"], {
+			cwd: root,
+			env: {
+				LOOP_CLEAN_SESSION_ID: sessionId,
+				LOOP_CLEAN_PROTOCOL_CLI: mockCli,
+			},
+		});
+		expect(result.exitCode).toBe(4);
+		expect(result.stderr).toMatch(/valid Git baseline/);
+
+		// The invalid baseline must NOT exist at the final path
+		const runDir = join(root, ".claude/run/loop-clean", sessionId);
+		expect(existsSync(join(runDir, "git-baseline.json"))).toBe(false);
+	});
+
+	test("same session ID can be re-initialized after a failed init", async () => {
+		const root = await createLoopRepository();
+		const sessionId = `recovery-${process.pid}-${sessionCounter++}`;
+		const mockDir = await mkdtemp(join(tmpdir(), "loop-clean-recovery-mock-"));
+		externalDirectories.push(mockDir);
+
+		const mockCli = join(mockDir, "mock-cli.ts");
+		await writeFile(
+			mockCli,
+			`const [, , command, ...rest] = process.argv;
+const args: Record<string, string> = {};
+for (let i = 0; i < rest.length; i++) {
+  if (rest[i] === "--output") args.output = rest[++i];
+  else if (rest[i] === "--repo-root") args["repo-root"] = rest[++i];
+}
+if (command === "capture-git" && args.output) {
+  await Bun.write(args.output, "not-json");
+}
+`,
+		);
+		await chmod(mockCli, 0o755);
+
+		// First attempt: mock produces garbage, init must reject
+		const first = await runProcess(["bash", controller, "init"], {
+			cwd: root,
+			env: {
+				LOOP_CLEAN_SESSION_ID: sessionId,
+				LOOP_CLEAN_PROTOCOL_CLI: mockCli,
+			},
+		});
+		expect(first.exitCode).toBe(4);
+
+		// Second attempt with the same session ID: must succeed (no poisoned baseline)
+		const second = await runProcess(["bash", controller, "init"], {
+			cwd: root,
+			env: { LOOP_CLEAN_SESSION_ID: sessionId },
+		});
+		expect(second.exitCode).toBe(0);
+
+		const runDir = join(root, ".claude/run/loop-clean", sessionId);
+		expect(existsSync(join(runDir, "git-baseline.json"))).toBe(true);
+	});
+
+	test("CLI crash does not leave a partial baseline file", async () => {
+		const root = await createLoopRepository();
+		const sessionId = `crash-${process.pid}-${sessionCounter++}`;
+		const mockDir = await mkdtemp(join(tmpdir(), "loop-clean-crash-mock-"));
+		externalDirectories.push(mockDir);
+
+		const mockCli = join(mockDir, "mock-cli.ts");
+		await writeFile(
+			mockCli,
+			`const [, , command, ...rest] = process.argv;
+const args: Record<string, string> = {};
+for (let i = 0; i < rest.length; i++) {
+  if (rest[i] === "--output") args.output = rest[++i];
+  else if (rest[i] === "--repo-root") args["repo-root"] = rest[++i];
+}
+if (command === "capture-git" && args.output) {
+  await Bun.write(args.output, "partial garbage");
+  process.exit(1);
+}
+`,
+		);
+		await chmod(mockCli, 0o755);
+
+		const result = await runProcess(["bash", controller, "init"], {
+			cwd: root,
+			env: {
+				LOOP_CLEAN_SESSION_ID: sessionId,
+				LOOP_CLEAN_PROTOCOL_CLI: mockCli,
+			},
+		});
+		expect(result.exitCode).toBe(4);
+		expect(result.stderr).toMatch(/failed to capture Git invariants/);
+
+		// No final file must remain after a crash
+		const runDir = join(root, ".claude/run/loop-clean", sessionId);
+		expect(existsSync(join(runDir, "git-baseline.json"))).toBe(false);
 	});
 });
