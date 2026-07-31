@@ -21,7 +21,8 @@ type Canonicalizer = (ctx: ProblemContext) => string;
 const LABELS: Record<string, string> = {
 	// eslint / @typescript-eslint
 	"no-empty": "empty block statement",
-	"@typescript-eslint/no-explicit-any": "weak type `any` used without justification",
+	"@typescript-eslint/no-explicit-any":
+		"weak type `any` used without justification",
 	"@typescript-eslint/explicit-function-return-type":
 		"function missing explicit return type",
 	complexity: "cyclomatic complexity exceeds threshold",
@@ -30,8 +31,7 @@ const LABELS: Record<string, string> = {
 	"jsdoc/require-jsdoc": "missing JSDoc on public API",
 	"prefer-const": "`let` used where `const` suffices",
 	// biome
-	"lint/suspicious/noExplicitAny":
-		"weak type `any` used without justification",
+	"lint/suspicious/noExplicitAny": "weak type `any` used without justification",
 	"lint/complexity/noUselessCatch": "useless catch block",
 	"lint/style/useConst": "`let` used where `const` suffices",
 	// ruff
@@ -47,7 +47,8 @@ const LABELS: Record<string, string> = {
 	// grep rules
 	"grep/debug-statements": "debug statement left in production code",
 	"grep/abbreviations-denylist": "cryptic abbreviation used",
-	"grep/any-without-justif": "weak type `any` used without justification comment",
+	"grep/any-without-justif":
+		"weak type `any` used without justification comment",
 };
 
 function defaultCanon(ctx: ProblemContext): string {

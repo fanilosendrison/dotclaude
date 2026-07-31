@@ -1,89 +1,29 @@
+import type { Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
+import { parseScopeManifest } from "../../../loop-clean-protocol/src/scope/scope-schema.ts";
+import { sha256 } from "../../../loop-clean-protocol/src/shared/hash.ts";
+import { canonicalJson } from "../../../loop-clean-protocol/src/shared/json.ts";
 
-export type ScopeMode = "diff" | "all" | "path";
+export type ScopeMode = "all" | "path";
 
 export interface ScopeOptions {
-	mode: ScopeMode;
-	/** Required when mode === "path". Ignored otherwise. */
-	path?: string;
-	/** Current working directory — used as repo root for relative paths. */
-	cwd: string;
+	readonly scopeFile?: string;
+	readonly expectedDigest?: string;
+	readonly mode?: ScopeMode;
+	readonly path?: string;
+	readonly cwd: string;
 }
 
-/**
- * Resolve the list of files to scan based on the scope mode.
- *
- * - diff : when `LOOP_CLEAN_BASE_SHA` is set in the environment, return files
- *          changed since that SHA (`git diff $BASE_SHA --name-only`), so the
- *          scope stays stable across iterations even if intermediate commits
- *          advance HEAD. Otherwise, fall back to working-tree + staged
- *          (`git diff --name-only` + `git diff --cached --name-only`).
- *          Returns an empty list outside a git repo.
- * - all  : walk the repo from cwd, skip `node_modules`, `.git`, and
- *          `dist`/`build` dirs. Returns repo-relative paths.
- * - path : walk the given subtree the same way.
- */
-export async function resolveScope(
-	options: ScopeOptions,
-): Promise<string[]> {
-	switch (options.mode) {
-		case "diff":
-			return await resolveDiffScope(options.cwd);
-		case "all":
-			return await walkSourceTree(options.cwd, options.cwd);
-		case "path": {
-			if (!options.path) {
-				throw new Error("--scope=path requires --path=<dir>");
-			}
-			return await walkSourceTree(options.path, options.cwd);
-		}
-	}
-}
-
-async function resolveDiffScope(cwd: string): Promise<string[]> {
-	const baseSha = process.env.LOOP_CLEAN_BASE_SHA?.trim();
-	if (baseSha) {
-		return await runGitNameOnly(["git", "diff", baseSha, "--name-only"], cwd);
-	}
-	const files = new Set<string>();
-	const both = await Promise.all([
-		runGitNameOnly(["git", "diff", "--name-only"], cwd),
-		runGitNameOnly(["git", "diff", "--cached", "--name-only"], cwd),
-	]);
-	for (const list of both) {
-		for (const f of list) files.add(f);
-	}
-	return [...files];
-}
-
-async function runGitNameOnly(cmd: string[], cwd: string): Promise<string[]> {
-	try {
-		const proc = Bun.spawn(cmd, {
-			stdout: "pipe",
-			stderr: "pipe",
-			cwd,
-		});
-		const [stdout, exitCode] = await Promise.all([
-			new Response(proc.stdout).text(),
-			proc.exited,
-		]);
-		if (exitCode !== 0) return [];
-		const out: string[] = [];
-		for (const line of stdout.split("\n")) {
-			const trimmed = line.trim();
-			if (trimmed) out.push(trimmed);
-		}
-		return out;
-	} catch {
-		// Not a git repo / git missing → ignore.
-		return [];
-	}
+export interface ResolvedScope {
+	readonly files: string[];
+	readonly digest: string;
 }
 
 const SKIP_DIRS = new Set([
 	"node_modules",
 	".git",
+	".claude",
 	"dist",
 	"build",
 	".next",
@@ -93,29 +33,89 @@ const SKIP_DIRS = new Set([
 	"venv",
 ]);
 
+function compareText(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0;
+}
+
+async function resolveManifestScope(
+	scopeFile: string,
+	cwd: string,
+	expectedDigest?: string,
+): Promise<ResolvedScope> {
+	let raw: unknown;
+	try {
+		raw = JSON.parse(await Bun.file(scopeFile).text());
+	} catch (error) {
+		throw new Error(
+			`scope file contains invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	const manifest = parseScopeManifest(raw);
+	if (resolve(manifest.repo_root) !== resolve(cwd)) {
+		throw new Error(
+			"scope.json repo_root differs from the scanner repository root",
+		);
+	}
+	if (expectedDigest && manifest.digest !== expectedDigest) {
+		throw new Error(
+			`scope.json digest ${manifest.digest} differs from expected digest ${expectedDigest}`,
+		);
+	}
+	const files = manifest.entries
+		.filter((entry) => entry.eligible_for_audit && entry.exists)
+		.map((entry) => entry.path)
+		.sort(compareText);
+	return { files, digest: manifest.digest };
+}
+
 async function walkSourceTree(
-	dir: string,
-	repoRoot: string,
+	directory: string,
+	repositoryRoot: string,
 ): Promise<string[]> {
-	const out: string[] = [];
-	const stack: string[] = [dir];
+	const output: string[] = [];
+	const stack: string[] = [directory];
 	while (stack.length > 0) {
 		const current = stack.pop();
 		if (!current) break;
-		let entries;
+		let entries: Dirent[];
 		try {
 			entries = await readdir(current, { withFileTypes: true });
 		} catch {
 			continue;
 		}
+		entries.sort((left, right) => compareText(left.name, right.name));
 		for (const entry of entries) {
-			const full = join(current, entry.name);
+			const fullPath = join(current, entry.name);
 			if (entry.isDirectory()) {
-				if (!SKIP_DIRS.has(entry.name)) stack.push(full);
+				if (!SKIP_DIRS.has(entry.name)) stack.push(fullPath);
 			} else if (entry.isFile()) {
-				out.push(relative(repoRoot, full));
+				output.push(relative(repositoryRoot, fullPath));
 			}
 		}
 	}
-	return out;
+	return output.sort(compareText);
+}
+
+export async function resolveScope(
+	options: ScopeOptions,
+): Promise<ResolvedScope> {
+	if (options.scopeFile) {
+		return await resolveManifestScope(
+			options.scopeFile,
+			options.cwd,
+			options.expectedDigest,
+		);
+	}
+	const mode = options.mode ?? "all";
+	if (mode === "path" && !options.path) {
+		throw new Error("--scope=path requires --path=<dir>");
+	}
+	const files = await walkSourceTree(
+		mode === "path" ? (options.path as string) : options.cwd,
+		options.cwd,
+	);
+	return {
+		files,
+		digest: sha256(canonicalJson({ schema_version: 1, files })),
+	};
 }

@@ -1,81 +1,50 @@
-# coding-standards-scanner — Mechanical pass of the coding-standards skill
+# Coding Standards Scanner
 
-Bun TS CLI that scans a scope of source files, runs the configured
-linters + language-agnostic grep rules, and emits a canonical
-coding-standards JSON report. Deterministic — no LLM, no judgment.
+Deterministic Bun CLI for the mechanical coding-standards pass.
 
 ## Usage
 
 ```bash
-# Default scope: git diff
-bun src/cli.ts --output=/tmp/scanner.json
-
-# Explicit scopes
-bun src/cli.ts --scope=diff            --output=/tmp/scanner.json
-bun src/cli.ts --scope=all             --output=/tmp/scanner.json
+bun src/cli.ts --scope-file=/absolute/run/iter-000/scope.json --output=/tmp/scanner.json
+bun src/cli.ts --scope=all --output=/tmp/scanner.json
 bun src/cli.ts --scope=path --path=src --output=/tmp/scanner.json
 ```
 
-## Architecture
-
-```
-coding-standards-scanner/
-├── CLAUDE.md
-├── package.json
-└── src/
-    ├── cli.ts                         # Entry: parse args, orchestrate
-    ├── lib/
-    │   ├── scope-resolver.ts          # --scope=diff|all|path → string[]
-    │   ├── rule-mapping.ts            # ruleId → axis | null
-    │   ├── severity-defaults.ts       # ruleId → default severity
-    │   ├── problem-canonicalizer.ts   # ruleId → stable problem phrasing
-    │   ├── fix-templates.ts           # ruleId → fix_proposal
-    │   ├── observable-change-templates.ts  # ruleId → observable_change
-    │   ├── finding-emitter.ts         # build Finding via shared lib id hash
-    │   ├── linter-parsers/
-    │   │   ├── types.ts               # RawLinterFinding
-    │   │   ├── eslint.ts              # --format json
-    │   │   ├── biome.ts               # --reporter json
-    │   │   ├── ruff.ts                # --output-format json
-    │   │   └── shellcheck.ts          # -f json
-    │   └── grep-rules/
-    │       ├── types.ts               # GrepRule interface
-    │       ├── debug-statements.ts    # console.log/print/debugger
-    │       ├── abbreviations-denylist.ts  # mgr/foo/tmp2/...
-    │       └── any-without-justif.ts  # `any` w/o justification comment
-    └── __tests__/                     # golden fixtures + unit tests
-```
+Loop-clean callers must use `--scope-file`. The scanner never derives another
+Git scope in that mode.
 
 ## Flow
 
-1. Parse CLI args (`--scope`, `--path`, `--output`).
-2. Resolve scope → `files[]`.
-3. Filter to code files that still exist (git diff may include deleted files).
-4. Walk up from cwd to find `STACK_EVAL.yaml` (for linter choice).
-5. Bucket files by language (`.ts/.tsx/.js/.jsx` / `.py` / `.sh/.bash`).
-6. Per non-empty bucket: pick + run linter. **Fail-open on missing linter**: stderr warning, skip that bucket.
-7. Run language-agnostic grep rules on all files.
-8. Map raw findings → `Finding` via `rule-mapping` (drop out-of-scope), `severity-defaults`, `problem-canonicalizer`, `fix-templates`, `observable-change-templates`, `finding-emitter` (stable id).
-9. Compute summary + blocking.
-10. Validate output via `coding-standards-schema/validator`.
-11. Write JSON to `--output`.
+1. Parse and validate the scope manifest.
+2. Require its repository root to equal the scanner working directory.
+3. Select existing, auditable entries and recognized code extensions.
+4. Read `STACK_EVAL.yaml` for configured linter choices.
+5. Run supported linters per language bucket.
+6. Run deterministic grep rules.
+7. Build stable findings, summaries, and blocking state.
+8. Copy the manifest digest into `scope_digest`.
+9. Validate and write the report.
 
-## Invariants
+Missing optional linters are fail-open with a warning. Invalid arguments,
+manifest data, digest shape, or report schema are hard failures.
 
-- **Deterministic** : same inputs → same bytes on disk. No timestamps, no random ordering.
-- **Fail-open** : missing linter → warning to stderr, skip that bucket. Only exit 1 on bad args or schema validation failure after building the report (that would indicate an internal bug).
-- **Frozen schema** : output JSON matches `lib/coding-standards-schema` and is consumed by `loop-clean.sh` and `coding-standards-consolidate`.
-- **Stable problem strings** : `problem-canonicalizer` must not embed timestamps, iteration numbers, or LLM-generated content.
-- **Disjoint scope from semantic pass** : rules mapped here (`RULE_TO_AXIS`) are the exact exclusion list of the agent `coding-standards-file.md`.
+## Architecture
 
-## Consumers
+```text
+coding-standards-scanner/
+├── CLAUDE.md
+└── src/
+    ├── cli.ts
+    ├── lib/
+    │   ├── scope-resolver.ts
+    │   ├── finding-emitter.ts
+    │   ├── rule-mapping.ts
+    │   ├── severity-defaults.ts
+    │   ├── grep-rules/
+    │   └── linter-parsers/
+    └── __tests__/
+```
 
-- `scripts/coding-standards-consolidate/` — reads the scanner JSON + per-file sub-agent JSONs, emits the final report.
-- `skills/coding-standards/SKILL.md` (orchestrator) — invokes this CLI as step 2.
-
-## Adding a new rule
-
-1. If linter-sourced: add the linter's ruleId to `rule-mapping.ts` (axis) and `severity-defaults.ts`. Optional: specialize `problem-canonicalizer.ts`, `fix-templates.ts`, `observable-change-templates.ts`.
-2. If grep-sourced: create a new file under `lib/grep-rules/` implementing `GrepRule`, register it in `cli.ts#runGrepRules`, then register its `ruleId` in the mapping tables as above.
-3. Add a test: golden fixture under `__tests__/linter-parsers/` (for linter rules) or unit test under `__tests__/grep-rules/` (for grep rules).
-4. Mirror the exclusion in `agents/coding-standards-file.md`'s "Périmètre d'audit" section.
+The output schema comes from `scripts/lib/coding-standards-schema`. The
+loop-clean protocol manifest schema comes from
+`scripts/loop-clean-protocol/src/scope/scope-schema.ts`.

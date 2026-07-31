@@ -10,8 +10,7 @@ const GOLDEN = JSON.stringify([
 		endColumn: 4,
 		level: "warning",
 		code: 2164,
-		message:
-			"Use 'cd ... || exit' or 'cd ... || return' in case cd fails.",
+		message: "Use 'cd ... || exit' or 'cd ... || return' in case cd fails.",
 	},
 	{
 		file: "/repo/bin/deploy.sh",

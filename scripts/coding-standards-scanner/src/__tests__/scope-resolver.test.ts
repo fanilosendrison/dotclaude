@@ -1,100 +1,135 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { join } from "node:path";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { resolveScope } from "../lib/scope-resolver";
+import { join } from "node:path";
+import { resolveScope } from "../lib/scope-resolver.ts";
 
-let repo: string;
-let originalBaseSha: string | undefined;
+const temporaryDirectories: string[] = [];
+const digest = "a".repeat(64);
 
-async function git(args: string[], cwd: string): Promise<string> {
-	const proc = Bun.spawn(["git", ...args], {
-		cwd,
-		stdout: "pipe",
-		stderr: "pipe",
-		env: {
-			...process.env,
-			GIT_AUTHOR_NAME: "test",
-			GIT_AUTHOR_EMAIL: "test@example.com",
-			GIT_COMMITTER_NAME: "test",
-			GIT_COMMITTER_EMAIL: "test@example.com",
-		},
-	});
-	const stdout = await new Response(proc.stdout).text();
-	const exitCode = await proc.exited;
-	if (exitCode !== 0) {
-		const stderr = await new Response(proc.stderr).text();
-		throw new Error(`git ${args.join(" ")} failed: ${stderr}`);
-	}
-	return stdout.trim();
+async function temporaryDirectory(): Promise<string> {
+	const directory = await mkdtemp(
+		join(tmpdir(), "coding-standards-scope-test-"),
+	);
+	temporaryDirectories.push(directory);
+	return directory;
 }
 
-beforeEach(async () => {
-	repo = await mkdtemp(join(tmpdir(), "scope-resolver-test-"));
-	await git(["init", "--quiet", "--initial-branch=main"], repo);
-	await writeFile(join(repo, "baseline.ts"), "export const baseline = 1;\n");
-	await git(["add", "."], repo);
-	await git(["commit", "--quiet", "-m", "baseline"], repo);
-	originalBaseSha = process.env.LOOP_CLEAN_BASE_SHA;
-	delete process.env.LOOP_CLEAN_BASE_SHA;
-});
+async function writeScopeFile(
+	directory: string,
+	entries: readonly Record<string, unknown>[],
+): Promise<string> {
+	const path = join(directory, "scope.json");
+	await writeFile(
+		path,
+		`${JSON.stringify({
+			schema_version: 1,
+			repo_root: directory,
+			generated_at: "informational",
+			entries,
+			content_digest: "b".repeat(64),
+			digest,
+		})}\n`,
+	);
+	return path;
+}
+
+function entry(
+	path: string,
+	overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+	return {
+		path,
+		original_path: null,
+		kind: "tracked",
+		index_status: ".",
+		worktree_status: "M",
+		exists: true,
+		eligible_for_audit: true,
+		exclusion_reason: null,
+		...overrides,
+	};
+}
 
 afterEach(async () => {
-	if (originalBaseSha === undefined) {
-		delete process.env.LOOP_CLEAN_BASE_SHA;
-	} else {
-		process.env.LOOP_CLEAN_BASE_SHA = originalBaseSha;
+	for (const directory of temporaryDirectories.splice(0)) {
+		await rm(directory, { recursive: true, force: true });
 	}
-	await rm(repo, { recursive: true, force: true });
 });
 
-describe("resolveScope mode=diff", () => {
-	test("without LOOP_CLEAN_BASE_SHA: returns working-tree + staged unique union", async () => {
-		await writeFile(join(repo, "baseline.ts"), "export const baseline = 99;\n");
-		await writeFile(join(repo, "staged.ts"), "export const b = 2;\n");
-		await git(["add", "staged.ts"], repo);
-
-		const files = await resolveScope({ mode: "diff", cwd: repo });
-
-		expect(files.sort()).toEqual(["baseline.ts", "staged.ts"]);
+describe("resolveScope from loop-clean manifest", () => {
+	test("uses only existing eligible manifest entries and preserves the digest", async () => {
+		const directory = await temporaryDirectory();
+		const scopeFile = await writeScopeFile(directory, [
+			entry("src/included.ts"),
+			entry("src/deleted.ts", { kind: "deleted", exists: false }),
+			entry("backlog.md", {
+				eligible_for_audit: false,
+				exclusion_reason: "loop-clean backlog ledger",
+			}),
+		]);
+		const scope = await resolveScope({
+			scopeFile,
+			expectedDigest: digest,
+			cwd: directory,
+		});
+		expect(scope.files).toEqual(["src/included.ts"]);
+		expect(scope.digest).toBe(digest);
 	});
 
-	test("with LOOP_CLEAN_BASE_SHA: returns files changed since that SHA", async () => {
-		const baseSha = await git(["rev-parse", "HEAD"], repo);
-		await writeFile(join(repo, "since-base.ts"), "export const c = 3;\n");
-		await git(["add", "."], repo);
-		await git(["commit", "--quiet", "-m", "post-base change"], repo);
-
-		process.env.LOOP_CLEAN_BASE_SHA = baseSha;
-		const files = await resolveScope({ mode: "diff", cwd: repo });
-
-		expect(files).toEqual(["since-base.ts"]);
+	test("rejects a digest that differs from the orchestrator value", async () => {
+		const directory = await temporaryDirectory();
+		const scopeFile = await writeScopeFile(directory, [
+			entry("src/example.ts"),
+		]);
+		await expect(
+			resolveScope({
+				scopeFile,
+				expectedDigest: "b".repeat(64),
+				cwd: directory,
+			}),
+		).rejects.toThrow(/digest/i);
 	});
 
-	test("with LOOP_CLEAN_BASE_SHA: scope survives an intermediate commit (commit-per-iter scenario)", async () => {
-		const baseSha = await git(["rev-parse", "HEAD"], repo);
-
-		await writeFile(join(repo, "feature.ts"), "export const f = 4;\n");
-		await git(["add", "."], repo);
-		await git(["commit", "--quiet", "-m", "iter-0 commit"], repo);
-
-		process.env.LOOP_CLEAN_BASE_SHA = baseSha;
-		const anchoredFiles = await resolveScope({ mode: "diff", cwd: repo });
-
-		expect(anchoredFiles).toEqual(["feature.ts"]);
-
-		delete process.env.LOOP_CLEAN_BASE_SHA;
-		const standaloneFiles = await resolveScope({ mode: "diff", cwd: repo });
-
-		expect(standaloneFiles).toEqual([]);
+	test("rejects a manifest whose repo root differs from cwd", async () => {
+		const directory = await temporaryDirectory();
+		const other = await temporaryDirectory();
+		const scopeFile = await writeScopeFile(other, [entry("src/example.ts")]);
+		await expect(resolveScope({ scopeFile, cwd: directory })).rejects.toThrow(
+			/repo_root/i,
+		);
 	});
 
-	test("with invalid LOOP_CLEAN_BASE_SHA: returns empty (git diff fails silently)", async () => {
-		process.env.LOOP_CLEAN_BASE_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
-		await writeFile(join(repo, "ignored.ts"), "export const x = 0;\n");
+	test("rejects an invalid manifest instead of silently returning an empty list", async () => {
+		const directory = await temporaryDirectory();
+		const scopeFile = join(directory, "scope.json");
+		await writeFile(scopeFile, "{broken");
+		await expect(resolveScope({ scopeFile, cwd: directory })).rejects.toThrow(
+			/JSON/i,
+		);
+	});
+});
 
-		const files = await resolveScope({ mode: "diff", cwd: repo });
-
-		expect(files).toEqual([]);
+describe("resolveScope standalone", () => {
+	test("walks all or one target path without invoking Git", async () => {
+		const directory = await temporaryDirectory();
+		await mkdir(join(directory, "src", "nested"), { recursive: true });
+		await mkdir(join(directory, "other"), { recursive: true });
+		await writeFile(join(directory, "src", "one.ts"), "export {};\n");
+		await writeFile(join(directory, "src", "nested", "two.ts"), "export {};\n");
+		await writeFile(join(directory, "other", "three.ts"), "export {};\n");
+		const all = await resolveScope({ mode: "all", cwd: directory });
+		expect(all.files).toEqual([
+			"other/three.ts",
+			"src/nested/two.ts",
+			"src/one.ts",
+		]);
+		expect(all.digest).toMatch(/^[0-9a-f]{64}$/);
+		const targeted = await resolveScope({
+			mode: "path",
+			path: join(directory, "src"),
+			cwd: directory,
+		});
+		expect(targeted.files).toEqual(["src/nested/two.ts", "src/one.ts"]);
 	});
 });

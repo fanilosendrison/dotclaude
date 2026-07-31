@@ -19,8 +19,7 @@ export function parseEslintJson(jsonText: string): RawLinterFinding[] {
 	const out: RawLinterFinding[] = [];
 	for (const fileEntry of data) {
 		if (!fileEntry || typeof fileEntry !== "object") continue;
-		const filePath =
-			(fileEntry as { filePath?: unknown }).filePath ?? "";
+		const filePath = (fileEntry as { filePath?: unknown }).filePath ?? "";
 		if (typeof filePath !== "string") continue;
 		const messages = (fileEntry as { messages?: unknown }).messages;
 		if (!Array.isArray(messages)) continue;

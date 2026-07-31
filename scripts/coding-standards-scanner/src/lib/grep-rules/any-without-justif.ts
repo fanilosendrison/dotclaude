@@ -33,8 +33,9 @@ export const anyWithoutJustifRule: GrepRule = {
 			const prev = lines[i - 1] ?? "";
 			if (/^\s*\/\/.*\bjustification\b/i.test(prev)) continue;
 			if (/^\s*\/\*.*\bjustification\b/i.test(prev)) continue;
-			// biome-ignore comments are recognised as a narrow, machine-readable justification.
-			if (/biome-ignore\b/i.test(prev) || /biome-ignore\b/i.test(line)) continue;
+			// Tool suppression directives are a narrow, machine-readable justification.
+			if (/biome-ignore\b/i.test(prev) || /biome-ignore\b/i.test(line))
+				continue;
 			// eslint-disable comments ditto.
 			if (/eslint-disable(-next-line)?\b/i.test(prev)) continue;
 			if (/eslint-disable(-next-line)?\b/i.test(line)) continue;

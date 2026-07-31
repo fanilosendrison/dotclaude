@@ -37,7 +37,8 @@ const DENYLIST = [
 
 // Word-boundary regex per entry (built once).
 const PATTERNS = DENYLIST.map(
-	(word) => new RegExp(`\\b${word.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "g"),
+	(word) =>
+		new RegExp(`\\b${word.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "g"),
 );
 
 export const abbreviationsDenylistRule: GrepRule = {

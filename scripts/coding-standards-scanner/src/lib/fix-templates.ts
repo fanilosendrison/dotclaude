@@ -24,7 +24,8 @@ const TEMPLATES: Record<string, (ctx: ProblemContext) => string> = {
 		"Split the file along its natural responsibilities into smaller files with faithful names.",
 	"jsdoc/require-jsdoc": () =>
 		"Add a one-line JSDoc block above the declaration explaining its role.",
-	"prefer-const": () => "Change `let` to `const` if the binding is never reassigned.",
+	"prefer-const": () =>
+		"Change `let` to `const` if the binding is never reassigned.",
 	"lint/style/useConst": () =>
 		"Change `let` to `const` if the binding is never reassigned.",
 	E722: () =>
@@ -34,9 +35,9 @@ const TEMPLATES: Record<string, (ctx: ProblemContext) => string> = {
 	D100: () => "Add a module-level docstring describing the module's purpose.",
 	D101: () => "Add a class docstring describing the class's responsibility.",
 	D102: () => "Add a method docstring describing the method's contract.",
-	D103: () =>
-		"Add a function docstring describing the function's contract.",
-	SC2164: () => "Chain the `cd` with `|| exit` so the script aborts on failure.",
+	D103: () => "Add a function docstring describing the function's contract.",
+	SC2164: () =>
+		"Chain the `cd` with `|| exit` so the script aborts on failure.",
 	"grep/debug-statements": () =>
 		"Remove the debug statement or replace it with the project's logger.",
 	"grep/abbreviations-denylist": () =>

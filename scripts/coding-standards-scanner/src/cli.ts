@@ -7,9 +7,9 @@
  * missing linters (warn to stderr, skip).
  *
  * Usage:
- *   bun cli.ts --scope=diff            --output=<path>
- *   bun cli.ts --scope=all             --output=<path>
- *   bun cli.ts --scope=path --path=src --output=<path>
+ *   bun cli.ts --scope-file=<scope.json> --output=<path>
+ *   bun cli.ts --scope=all               --output=<path>
+ *   bun cli.ts --scope=path --path=src   --output=<path>
  */
 import { existsSync } from "node:fs";
 import { extname } from "node:path";
@@ -47,22 +47,26 @@ process.env.PATH = `${process.cwd()}/node_modules/.bin:${process.env.PATH ?? ""}
 
 interface CliArgs {
 	scope: ScopeMode;
+	scopeFile: string | undefined;
 	path: string | undefined;
 	output: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-	let scope: ScopeMode = "diff";
+	let scope: ScopeMode = "all";
+	let scopeFile: string | undefined;
 	let path: string | undefined;
 	let output: string | undefined;
 
 	for (const arg of argv) {
 		if (arg.startsWith("--scope=")) {
-			const v = arg.slice("--scope=".length);
-			if (v !== "diff" && v !== "all" && v !== "path") {
-				throw new Error(`invalid --scope: ${v}`);
+			const value = arg.slice("--scope=".length);
+			if (value !== "all" && value !== "path") {
+				throw new Error(`invalid --scope: ${value}`);
 			}
-			scope = v;
+			scope = value;
+		} else if (arg.startsWith("--scope-file=")) {
+			scopeFile = arg.slice("--scope-file=".length);
 		} else if (arg.startsWith("--path=")) {
 			path = arg.slice("--path=".length);
 		} else if (arg.startsWith("--output=")) {
@@ -70,8 +74,12 @@ function parseArgs(argv: string[]): CliArgs {
 		}
 	}
 	if (!output) throw new Error("missing --output=<path>");
-	if (scope === "path" && !path) throw new Error("--scope=path requires --path=<dir>");
-	return { scope, path, output };
+	if (scopeFile && path)
+		throw new Error("--scope-file cannot be combined with --path");
+	if (!scopeFile && scope === "path" && !path) {
+		throw new Error("--scope=path requires --path=<dir>");
+	}
+	return { scope, scopeFile, path, output };
 }
 
 type Bucket = ".ts/.tsx/.js/.jsx" | ".py" | ".sh/.bash";
@@ -131,10 +139,10 @@ async function runBiome(files: string[]): Promise<RawLinterFinding[]> {
 		return [];
 	}
 	try {
-		const proc = Bun.spawn(
-			["biome", "check", "--reporter=json", ...files],
-			{ stdout: "pipe", stderr: "pipe" },
-		);
+		const proc = Bun.spawn(["biome", "check", "--reporter=json", ...files], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
 		const [stdout] = await Promise.all([
 			new Response(proc.stdout).text(),
 			proc.exited,
@@ -248,12 +256,15 @@ async function main(): Promise<void> {
 
 	const scoped = await resolveScope({
 		mode: args.scope,
+		scopeFile: args.scopeFile,
+		expectedDigest: process.env.LOOP_CLEAN_SCOPE_DIGEST,
 		path: args.path,
 		cwd,
 	});
 
-	// Filter to code files that still exist (git diff includes deleted files).
-	const files = scoped.filter((f) => isCodeFile(f) && existsSync(f));
+	const files = scoped.files.filter(
+		(file) => isCodeFile(file) && existsSync(file),
+	);
 
 	// Resolve STACK_EVAL config once — we use it to pick between biome and
 	// eslint when both are plausible. Walk up from cwd.
@@ -278,7 +289,9 @@ async function main(): Promise<void> {
 	for (const bucket of Object.keys(buckets) as Bucket[]) {
 		const bucketFiles = buckets[bucket];
 		if (bucketFiles.length === 0) continue;
-		rawFindings.push(...(await runLinterForBucket(bucket, bucketFiles, config)));
+		rawFindings.push(
+			...(await runLinterForBucket(bucket, bucketFiles, config)),
+		);
 	}
 
 	// Language-agnostic grep rules on all files.
@@ -295,6 +308,7 @@ async function main(): Promise<void> {
 	const blocking = computeBlocking(summary);
 	const report = {
 		skill: "coding-standards" as const,
+		scope_digest: scoped.digest,
 		verdict: (findings.length === 0 ? "CLEAN" : "ISSUES_FOUND") as
 			| "CLEAN"
 			| "ISSUES_FOUND",
