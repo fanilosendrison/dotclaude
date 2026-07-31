@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { sha256 } from "../shared/hash.ts";
+import { readIndexDigest } from "./read-index-digest.ts";
 
 export const GitBaselineSchema = z.object({
 	schema_version: z.literal(1),
@@ -40,20 +40,6 @@ async function readHead(repositoryRoot: string): Promise<string> {
 	]);
 	if (head.exitCode !== 0) return "UNBORN";
 	return new TextDecoder("utf-8", { fatal: true }).decode(head.stdout).trim();
-}
-
-async function readIndexDigest(repositoryRoot: string): Promise<string> {
-	const index = await executeGitRead(repositoryRoot, [
-		"ls-files",
-		"--stage",
-		"-z",
-	]);
-	if (index.exitCode !== 0) {
-		throw new Error(
-			`git ls-files failed (${index.exitCode}): ${index.stderr.trim()}`,
-		);
-	}
-	return sha256(index.stdout);
 }
 
 export async function captureGitInvariants(
