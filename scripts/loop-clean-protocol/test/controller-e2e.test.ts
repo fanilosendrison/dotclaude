@@ -443,6 +443,23 @@ describe("loop-clean controller E2E", () => {
 		);
 	});
 
+	test("runtime-gate rejects scope when index changed after capture", async () => {
+		const root = await createLoopRepository();
+		const context = await startRun({ root });
+		const iteration = await prepareIteration(context, 0);
+
+		// Mutate the index without touching the worktree
+		await runGit(root, ["update-index", "--chmod=+x", ".gitignore"]);
+
+		// runtime-gate recalculates scope and must detect the index divergence
+		const gate = await controllerCommand(context, [
+			"runtime-gate",
+			"0",
+		]);
+		expect(gate.exitCode).not.toBe(0);
+		expect(gate.stderr).toMatch(/scope.*changed|index|diverg/i);
+	});
+
 	test("treats a deferred finding with a new ID as actionable", async () => {
 		const root = await createLoopRepository();
 		await writeRepositoryFile(root, "fresh.ts", "export const fresh = true;\n");
