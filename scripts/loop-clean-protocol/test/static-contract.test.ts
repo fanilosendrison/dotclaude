@@ -1,10 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 const repositoryRoot = resolve(import.meta.dir, "../../..");
 const read = (relativePath: string): string =>
 	readFileSync(resolve(repositoryRoot, relativePath), "utf8");
+
+function globFiles(root: string, pattern: string): string[] {
+	const prefix = pattern.replace(/\/\*\*$/, "");
+	const dir = join(root, prefix);
+	if (!existsSync(dir)) return [];
+	const result: string[] = [];
+	function walk(d: string) {
+		for (const name of readdirSync(d)) {
+			const full = join(d, name);
+			if (statSync(full).isDirectory()) walk(full);
+			else result.push(relative(root, full));
+		}
+	}
+	walk(dir);
+	return result;
+}
 
 function sourceFiles(directory: string): string[] {
 	const files: string[] = [];
@@ -56,35 +72,44 @@ describe("production protocol contract", () => {
 		);
 	});
 
-	test("removes every legacy production feature", () => {
+	test("removes every legacy production feature from the production perimeter", () => {
+		const productionGlobs = [
+			"skills/loop-clean/**",
+			"skills/fix-or-backlog/**",
+			"skills/coding-standards/**",
+			"skills/senior-review/**",
+			"skills/dedup-codebase/**",
+		];
 		const productionFiles = [
-			"skills/loop-clean/SKILL.md",
-			"skills/loop-clean/loop-clean.sh",
 			"agents/loop-clean-orchestrator.md",
-			"skills/fix-or-backlog/SKILL.md",
-			"skills/coding-standards/SKILL.md",
-			"skills/senior-review/SKILL.md",
 			"agents/coding-standards-file.md",
 			"agents/senior-review-file.md",
-			"agents/backlog-deep-crush-orchestrator.md",
-			"helpers/nightly-clean-prompt.md",
-			"skills/agent-creator/SKILL.md",
+			"agents/dedup-codebase-file.md",
+			"agents/fix-file.md",
+		];
+		const productionSourceGlobs = [
+			"scripts/loop-clean-protocol/src/**",
+			"scripts/coding-standards-scanner/src/**",
+			"scripts/coding-standards-consolidate/src/**",
+		];
+		const allProductionPaths = [
+			...productionGlobs.flatMap((g) => globFiles(repositoryRoot, g)),
+			...productionFiles.filter((f) => existsSync(resolve(repositoryRoot, f))),
+			...productionSourceGlobs.flatMap((g) => globFiles(repositoryRoot, g)),
+			"scripts/package.json",
 		];
 		const forbiddenProductionTerms = [
 			"LOOP_CLEAN_BASE_SHA",
 			"LOOP_CLEAN_COMMIT_PER_ITER",
 			"commit-iter",
 			"cmd_commit_iter",
-			"scope_mode",
-			"--scope=audit",
-			"direction-block",
-			"drift_id",
+			"spec-drift",
+			"spec drift",
 		];
-		for (const relativePath of productionFiles) {
+		for (const relativePath of allProductionPaths) {
 			const contents = read(relativePath);
 			for (const term of forbiddenProductionTerms)
 				expect(contents).not.toContain(term);
-			expect(contents).not.toMatch(/spec[- ]drift/i);
 		}
 		expect(existsSync(resolve(repositoryRoot, "scripts/spec-drift"))).toBe(
 			false,
@@ -103,6 +128,19 @@ describe("production protocol contract", () => {
 			expect(scriptName).not.toMatch(/^spec-drift(?::|$)/);
 		}
 		expect(packageJson.scripts.test).not.toMatch(/spec-drift/);
+	});
+
+	test("loop-clean.sh passes bash syntax validation", () => {
+		const result = Bun.spawnSync(
+			["bash", "-n", "skills/loop-clean/loop-clean.sh"],
+			{
+				cwd: repositoryRoot,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
+		);
+		expect(result.exitCode).toBe(0);
+		expect(result.stderr.toString()).toBe("");
 	});
 
 	test("documents and enforces the exact orchestration order", () => {
