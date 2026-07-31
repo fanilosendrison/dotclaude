@@ -1,221 +1,125 @@
 ---
 name: senior-review
 description: >
-  Review hostile d'un ensemble de fichiers. Orchestrateur qui identifie le
-  scope (fichiers modifies ou audit complet) et dispatche un sub-agent
-  `senior-review-file` par fichier, puis consolide les rapports en un
-  verdict unique CLEAN ou ISSUES FOUND. Consomme principalement par
-  `loop-clean` comme etape 1 de son pipeline post-implementation. Invocation
-  manuelle ponctuelle possible pour un audit cible. Ne modifie aucun fichier.
+  Performs hostile semantic review of the shared loop-clean scope, including
+  current content and demonstrated rename or deletion impact, and emits a
+  scope-bound canonical findings report without modifying files.
 ---
 
-# Senior Review (orchestrateur)
+# Senior Review
 
-Ce skill **n'implemente pas** la methodologie de review. Son role est strict :
+Review only the subject entries in the supplied manifest while using the full
+repository as read-only impact context.
 
-1. Identifier le scope (fichiers a reviewer).
-2. Dispatcher un sub-agent `senior-review-file` par fichier, en parallele.
-3. Consolider les rapports per-file en un verdict unique.
-4. Emettre le JSON consolide si `LOOP_CLEAN_JSON_OUT` est defini.
+## Scope contract
 
-La methodologie (11 axes, calibration, severites detaillees, regle
-`observable_change`, stabilite du `problem`, regles de conduite, format per-file)
-est la **source unique de verite** dans `~/.claude/agents/senior-review-file.md`.
+### Loop-clean mode
 
-## Declenchement
+Require `LOOP_CLEAN_SCOPE_FILE`, `LOOP_CLEAN_SCOPE_DIGEST`,
+`LOOP_CLEAN_REPO_ROOT`, and `LOOP_CLEAN_JSON_OUT`.
 
-**Consommateur principal : `loop-clean`.** Le skill est appele comme etape 1
-du pipeline `senior-review → dedup-codebase → spec-drift → fix-or-backlog`.
-La regle « post-implementation → invoquer /loop-clean avant commit » vit sur
-`loop-clean` (cf. CLAUDE.md global) et les conditions de skip (doc seule,
-config pure, typo) sont gerees a ce niveau. Ce skill ne les re-evalue pas.
+1. Parse and validate the manifest.
+2. Require `repo_root` and `digest` to match the environment exactly.
+3. Ignore entries with `eligible_for_audit=false`.
+4. Review current content for every eligible existing source or test file.
+5. Review deleted and renamed entries through read-only Git diffs, imports,
+   consumers, public surface, cross-references, and affected tests.
+6. Do not turn deletion or rename into an automatic finding. Emit only a
+   demonstrated behavioral, compatibility, or verification problem.
+7. Do not derive an independent subject file list.
 
-**Invocation manuelle : rare.** Cas legitimes :
-- Audit cible d'un fichier ou d'un sous-dossier specifique, hors pipeline.
-- Debug : verifier un diff isole sans declencher la boucle complete.
-
-Sinon, passer par `/loop-clean`.
-
-## Procedure
-
-### 1. Identifier le scope
-
-- **En mode loop-clean** : lire la variable d'environnement `LOOP_CLEAN_SCOPE`
-  emise par `prepare-iter`. Valeurs : `diff` (fichiers modifies, cas standard)
-  ou `all` (audit repo complet en mode `/loop-clean audit`).
-- **Invocation manuelle** : `git diff --name-only` (post-modification) ou
-  scope complet (`src/**/*.ts` + `specs/*.md` si applicable) selon l'intention.
-
-En l'absence de `LOOP_CLEAN_SCOPE` (invocation manuelle), le defaut est `diff`.
-
-Resolution concrete :
-- `LOOP_CLEAN_SCOPE=diff` :
-  - Si `$LOOP_CLEAN_BASE_SHA` est defini → `git diff "$LOOP_CLEAN_BASE_SHA" --name-only`
-    (ancrage au debut de la run loop-clean — stable a travers les iterations
-    meme si l'orchestrateur fait des commits intermediaires).
-  - Sinon → `git diff --name-only` + `git diff --cached --name-only`
-    (working tree + staged, cas standalone).
-- `LOOP_CLEAN_SCOPE=all` → tous les fichiers source du repo (plus `specs/*.md`
-  si applicable).
-
-Dans tous les cas : filtrer les fichiers source et de tests (skip `.md` doc
-pure, `.env`, `.gitignore`, etc.).
-
-### 2. Dispatcher les sub-agents en parallele
-
-Un sub-agent par fichier. Dans un seul message, emettre N appels `Agent(...)` :
-
-```
-Agent({
-  subagent_type: "senior-review-file",
-  description: "Senior review {basename}",
-  prompt: "Review {file_path}."
-})
-```
-
-**Deterministe** : ne PAS passer de `model` override. Le frontmatter de
-`senior-review-file` est la source unique de verite pour le model pin —
-l'orchestrateur reste sur le model de la session parent.
-
-### 3. Consolider
-
-Collecter les rapports per-file. Pour chaque finding retourne par un sub-agent :
-- propager tel quel les champs (axe, severite, fichier, ligne, probleme,
-  evidence, fix, observable_change) ;
-- calculer le champ `id` via la formule canonique (§ Formule canonique de `id`
-  ci-dessous).
-
-Calculer les totaux par severite et la regle de blocage.
-
-Emettre le rapport consolide (format ci-dessous).
-
----
-
-## Output consolide
-
-### Si des findings existent :
-
-```
-VERDICT: ISSUES FOUND
-FINDINGS:
-  1. [AXE] [SEVERITE: critical | major | notable | minor | nit | design]
-     FICHIER: [path:ligne]
-     PROBLEME: [description precise]
-     EVIDENCE: [extrait de code ou raisonnement]
-     FIX: [correction proposee]
-     OBSERVABLE_CHANGE: [assertion FAIL->PASS ou comportement run-time, ≤ 2 lignes.
-                         Chaine vide UNIQUEMENT si severite=design.]
-
-  2. ...
-
-RESUME: [N] critical, [N] major, [N] notable, [N] minor, [N] nit, [N] design
-BLOQUANT: [oui/non — oui si au moins 1 critical ou major. notable/design ne bloquent PAS.]
-```
-
-### Si aucun finding :
-
-```
-VERDICT: CLEAN
-FICHIERS REVIEWES: [liste]
-CONFIANCE: [high | medium — medium si le diff est large ou touche beaucoup de modules]
-```
-
-## Regles de blocage par severite
-
-Les definitions completes et la procedure de calibration sont dans
-`senior-review-file.md`. Ici, juste ce qu'il faut pour calculer le resume et
-la regle de blocage :
-
-| severity | bloque_merge | route vers      |
-|----------|--------------|-----------------|
-| critical | oui          | backlog.md      |
-| major    | oui          | backlog.md      |
-| notable  | non          | backlog.md      |
-| minor    | non          | backlog.md      |
-| nit      | non          | backlog.md      |
-| design   | non          | design-queue.md |
-
-`BLOQUANT = true` ssi au moins un finding consolide a `bloque_merge = oui`.
-
-## Axes (labels canoniques)
-
-Les sub-agents emettent l'un de ces douze labels dans le champ `axis` du JSON.
-L'orchestrateur les propage tels quels. La description detaillee de chaque axe,
-leur regroupement en phases d'execution, et la procedure d'audit per-file
-vivent dans `senior-review-file.md`.
-
-`cheat-detection`, `edge-cases`, `subtle-regression` (phase 1 — Correctness) ;
-`error-paths`, `performance`, `substrate-resilience`, `input-contract-boundary`
-(phase 2 — Robustness) ;
-`tests-substance` (phase 3 — Tests) ;
-`cross-ref-impact`, `naming-readability`, `api-surface`, `spec-drift-direction`
-(phase 4 — Interface & coherence).
-
-Les preoccupations suivantes ne sont PAS auditees par senior-review — elles
-sont couvertes par d'autres skills du pipeline `loop-clean` :
-
-- **Duplication / dead code / imports inutilises** → `dedup-codebase`.
-- **Weak typing / magic numbers / nommage stylistique / complexite cyclomatique** → `coding-standards` (mode audit).
-
-Si un sub-agent rencontre ces preoccupations, il **ne doit pas** emettre de
-finding — double-emission = bruit dans le pipeline.
-
----
-
-## Emission JSON (orchestration loop-clean)
-
-Le skill emet toujours le rapport humain ci-dessus. Si `LOOP_CLEAN_JSON_OUT`
-est defini, il ecrit aussi un JSON structure au chemin indique :
+Use read-only Git commands with the resolved root, for example:
 
 ```bash
-[[ -n "$LOOP_CLEAN_JSON_OUT" ]] && echo "$JSON_CONTENT" > "$LOOP_CLEAN_JSON_OUT"
+git -C "$LOOP_CLEAN_REPO_ROOT" diff HEAD -- "$path"
 ```
 
-En pratique le LLM produit le JSON via l'outil `Write` directement sur le
-chemin donne par la variable. Le fichier doit etre valide JSON (parseable
-par `jq`). Si la variable n'est pas definie, rien de plus — mode standalone.
+For an untracked file, review the complete current content. For a repository
+without HEAD, treat every existing subject file as entirely new.
 
-### Schema
+### Standalone mode
+
+Allow an explicitly supplied file or source-tree review. Keep standalone scope
+separate from loop-clean artifacts.
+
+## Dispatch
+
+Dispatch one `senior-review-file` agent for each existing subject file. For a
+removed or renamed path, give an agent the manifest entry, diff, and impact
+context rather than asking it to read nonexistent content.
+
+Do not override the agent's pinned model or effort. Propagate findings without
+rephrasing their stable `problem` field.
+
+## Review axes
+
+Audit these semantic axes:
+
+- `cheat-detection`
+- `edge-cases`
+- `subtle-regression`
+- `error-paths`
+- `performance`
+- `substrate-resilience`
+- `input-contract-boundary`
+- `tests-substance`
+- `cross-ref-impact`
+- `naming-readability`
+- `api-surface`
+- `contract-coherence`
+
+`contract-coherence` covers a demonstrated mismatch between current behavior
+and an explicit contract or invariant. It is a semantic review axis, not an
+automatic document-to-code scanner. Require concrete evidence and preserve the
+generic safety rule that ambiguous public or normative changes need human
+design review.
+
+Do not emit mechanical typing, formatting, unused import, duplication, or dead
+code findings; the other canonical producers own them.
+
+## Consolidation
+
+For each finding, preserve:
+
+```text
+id
+source=senior-review
+axis
+severity
+file
+line_start
+line_end
+problem
+evidence
+fix_proposal
+observable_change
+```
+
+Use the canonical stable ID formula:
+
+```text
+sha256([source, file, String(line_start ?? ""), axis, problem.slice(0, 80)].join("|")).slice(0, 16)
+```
+
+Write one JSON report to `LOOP_CLEAN_JSON_OUT` and copy the manifest digest:
 
 ```json
 {
   "skill": "senior-review",
-  "verdict": "CLEAN" | "ISSUES_FOUND",
-  "findings": [
-    {
-      "id": "string (16 hex chars)",
-      "source": "senior-review",
-      "axis": "string (un des 12 labels canoniques)",
-      "severity": "critical" | "major" | "notable" | "minor" | "nit" | "design",
-      "file": "string (chemin relatif repo)",
-      "line_start": number | null,
-      "line_end": number | null,
-      "problem": "string",
-      "evidence": "string",
-      "fix_proposal": "string",
-      "observable_change": "string (assertion FAIL->PASS ou comportement run-time, ≤ 2 lignes ; chaine vide UNIQUEMENT si severity=design)"
-    }
-  ],
+  "scope_digest": "sha256",
+  "verdict": "CLEAN",
+  "findings": [],
   "summary": {
-    "critical": number, "major": number, "notable": number,
-    "minor": number, "nit": number, "design": number
+    "critical": 0,
+    "major": 0,
+    "notable": 0,
+    "minor": 0,
+    "nit": 0,
+    "design": 0
   },
-  "blocking": boolean
+  "blocking": false
 }
 ```
 
-`blocking` = `true` si au moins un finding est `critical` ou `major`.
-
-### Formule canonique de `id`
-
-```
-id = sha256([source, file, String(line_start ?? ""), axis, problem.slice(0,80)].join("|")).slice(0,16)
-```
-
-Le separateur `|` est obligatoire pour eviter les collisions (ex : `file="a.ts\n42"`
-vs `file="a.ts"` + `line_start=42`). Le hash doit etre stable d'une invocation
-a l'autre — c'est la condition necessaire pour la detection d'oscillation par
-`loop-clean.sh`.
-
-L'orchestrateur ne reformule jamais `problem` — propager tel quel.
-
+Fail closed when the scope is invalid or the output cannot carry the exact
+`scope_digest`.
