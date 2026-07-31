@@ -1,9 +1,9 @@
 import type { Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import { parseScopeManifest } from "../../../loop-clean-protocol/src/scope/scope-schema.ts";
-import { sha256 } from "../../../loop-clean-protocol/src/shared/hash.ts";
-import { canonicalJson } from "../../../loop-clean-protocol/src/shared/json.ts";
+import { parseScopeManifest } from "../../../../skills/loop-clean/protocol/src/scope/scope-schema.ts";
+import { sha256 } from "../../../../skills/loop-clean/protocol/src/shared/hash.ts";
+import { canonicalJson } from "../../../../skills/loop-clean/protocol/src/shared/json.ts";
 
 export type ScopeMode = "all" | "path";
 

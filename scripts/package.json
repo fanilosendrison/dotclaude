@@ -2,7 +2,7 @@
 	"name": "scripts",
 	"type": "module",
 	"scripts": {
-		"test": "bun test auto-rename-session claude-code-ai statusline command-validator commit-msg-validator secret-scanner index-repo post-write-linter lib/stack-tools lib/coding-standards-schema coding-standards-scanner coding-standards-consolidate loop-clean-protocol new-cc-project-onboarder",
+		"test": "bun test auto-rename-session claude-code-ai statusline command-validator commit-msg-validator secret-scanner index-repo post-write-linter lib/stack-tools lib/coding-standards-schema coding-standards-scanner coding-standards-consolidate new-cc-project-onboarder && bun test ../skills/loop-clean/protocol",
 		"auto-rename:start": "bun auto-rename-session/src/index.ts",
 		"auto-rename:rename-all": "bun auto-rename-session/src/rename-all.ts",
 		"auto-rename:test": "bun test auto-rename-session",
@@ -36,8 +36,7 @@
 		"coding-standards-scanner:test": "bun test coding-standards-scanner",
 		"coding-standards-consolidate:cli": "bun coding-standards-consolidate/src/cli.ts",
 		"coding-standards-consolidate:test": "bun test coding-standards-consolidate",
-		"loop-clean-protocol:test": "bun test loop-clean-protocol",
-		"loop-clean-protocol:mutation": "bun loop-clean-protocol/test/mutation-runner.ts",
+		
 		"onboarder:cli": "bun new-cc-project-onboarder/src/required-tools-checker/required-tools-checker.ts",
 		"onboarder:start": "bun new-cc-project-onboarder/src/turnlock-orchestrator/main.ts",
 		"onboarder:test": "bun test new-cc-project-onboarder",

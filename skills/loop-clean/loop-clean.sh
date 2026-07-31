@@ -7,7 +7,7 @@ set -euo pipefail
 readonly MAX_ITERATIONS=10
 readonly RETENTION_DAYS=7
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly PROTOCOL_CLI="${LOOP_CLEAN_PROTOCOL_CLI:-$SCRIPT_DIR/../../scripts/loop-clean-protocol/src/cli.ts}"
+readonly PROTOCOL_CLI="${LOOP_CLEAN_PROTOCOL_CLI:-$SCRIPT_DIR/protocol/src/cli.ts}"
 
 _sha256() {
 	if command -v sha256sum >/dev/null 2>&1; then

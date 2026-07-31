@@ -1,1 +1,1 @@
-export { computeFindingId } from "../../../loop-clean-protocol/src/findings/finding-id.ts";
+export { computeFindingId } from "../../../../skills/loop-clean/protocol/src/findings/finding-id.ts";
