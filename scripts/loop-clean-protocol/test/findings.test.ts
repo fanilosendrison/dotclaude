@@ -69,10 +69,11 @@ async function createInputs(
 	const scopeFile = join(iterationDirectory, "scope.json");
 	const deferredFile = join(iterationDirectory, "deferred-findings.json");
 	await writeJson(scopeFile, {
-		schema_version: 1,
+		schema_version: 2,
 		repo_root: "/temporary/repository",
 		generated_at: "informational",
 		entries: [],
+		index_digest: "e".repeat(64),
 		content_digest: "f".repeat(64),
 		digest: scopeDigest,
 	});

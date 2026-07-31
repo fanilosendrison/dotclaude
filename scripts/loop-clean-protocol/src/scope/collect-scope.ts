@@ -1,5 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { readIndexDigest } from "../git/read-index-digest.ts";
 import { sha256 } from "../shared/hash.ts";
 import { canonicalJson } from "../shared/json.ts";
 import { captureScopeContentDigest } from "./capture-scope-content.ts";
@@ -125,22 +126,25 @@ export async function collectScope(
 		});
 	}
 	entries.sort(compareEntries);
+	const indexDigest = await readIndexDigest(normalizedRoot);
 	const contentDigest = await captureScopeContentDigest({
 		repo_root: normalizedRoot,
 		entries,
 	});
 	const digest = sha256(
 		canonicalJson({
-			schema_version: 1,
+			schema_version: 2,
 			entries,
+			index_digest: indexDigest,
 			content_digest: contentDigest,
 		}),
 	);
 	return ScopeManifestSchema.parse({
-		schema_version: 1,
+		schema_version: 2,
 		repo_root: normalizedRoot,
 		generated_at: new Date().toISOString(),
 		entries,
+		index_digest: indexDigest,
 		content_digest: contentDigest,
 		digest,
 	});

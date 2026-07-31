@@ -40,10 +40,11 @@ export const ScopeEntrySchema = z.object({
 });
 
 export const ScopeManifestSchema = z.object({
-	schema_version: z.literal(1),
+	schema_version: z.literal(2),
 	repo_root: z.string().refine(isAbsolute, "repo_root must be absolute"),
 	generated_at: z.string().min(1),
 	entries: z.array(ScopeEntrySchema),
+	index_digest: z.string().regex(/^[0-9a-f]{64}$/),
 	content_digest: z.string().regex(/^[0-9a-f]{64}$/),
 	digest: z.string().regex(/^[0-9a-f]{64}$/),
 });

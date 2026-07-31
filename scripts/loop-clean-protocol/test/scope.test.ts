@@ -182,6 +182,86 @@ describe("collectScope", () => {
 		expect(firstManifest.digest).toBe(secondManifest.digest);
 	});
 
+	test("index_digest changes when only the staged blob changes (MM→M. scenario)", async () => {
+		const root = await repository();
+		await writeRepositoryFile(root, "mm-file.ts", "v1\n");
+		await runGit(root, ["add", "mm-file.ts"]);
+		await runGit(root, ["commit", "--quiet", "-m", "baseline"]);
+
+		// Modify worktree → .M (index unchanged)
+		await writeRepositoryFile(root, "mm-file.ts", "v2\n");
+		const afterWorktree = await collectScope(root);
+
+		// Stage the change → M. (index matches worktree, both differ from HEAD)
+		await runGit(root, ["add", "mm-file.ts"]);
+		const afterStage = await collectScope(root);
+
+		// Restore worktree to HEAD content (v1) without touching the index
+		await runGit(root, [
+			"restore",
+			"--source=HEAD",
+			"--worktree",
+			"--",
+			"mm-file.ts",
+		]);
+		const indexOnlyModified = await collectScope(root);
+
+		// index_digest must change when something is staged
+		expect(afterWorktree.index_digest).not.toBe(afterStage.index_digest);
+
+		// content_digest is stable: both states have same worktree content (v2)
+		expect(afterWorktree.content_digest).toBe(afterStage.content_digest);
+
+		// When worktree is restored to HEAD but index is still modified:
+		// The entry set is the same (one modified tracked file),
+		// content_digest matches because worktree = HEAD (v1)
+		expect(indexOnlyModified.content_digest).not.toBe(
+			afterStage.content_digest,
+		);
+		expect(indexOnlyModified.index_digest).toBe(afterStage.index_digest);
+
+		// digest (canonical) must differ between states
+		expect(afterWorktree.digest).not.toBe(afterStage.digest);
+		expect(afterStage.digest).not.toBe(indexOnlyModified.digest);
+	});
+
+	test("index_digest changes for executable mode change in the index", async () => {
+		const root = await repository();
+		await writeRepositoryFile(root, "script.sh", "#!/bin/sh\necho ok\n");
+		await runGit(root, ["add", "script.sh"]);
+		await runGit(root, ["commit", "--quiet", "-m", "baseline"]);
+
+		const before = await collectScope(root);
+
+		await runGit(root, ["update-index", "--chmod=+x", "script.sh"]);
+		const after = await collectScope(root);
+
+		expect(after.index_digest).not.toBe(before.index_digest);
+		// content_digest changes because the scope gained an entry (index modified)
+		expect(after.content_digest).not.toBe(before.content_digest);
+		expect(after.digest).not.toBe(before.digest);
+	});
+
+	test("index unchanged but worktree modified: index_digest stable, content_digest changes", async () => {
+		const root = await repository();
+		await writeRepositoryFile(root, "mod.ts", "v1\n");
+		await runGit(root, ["add", "mod.ts"]);
+		await runGit(root, ["commit", "--quiet", "-m", "baseline"]);
+
+		const before = await collectScope(root);
+
+		await writeRepositoryFile(root, "mod.ts", "v2\n");
+		const after = await collectScope(root);
+
+		expect(after.index_digest).toBe(before.index_digest);
+		expect(after.content_digest).not.toBe(before.content_digest);
+		expect(after.digest).not.toBe(before.digest);
+		expect(after.entries[0]).toMatchObject({
+			index_status: ".",
+			worktree_status: "M",
+		});
+	});
+
 	test("digest changes for same-status content changes", async () => {
 		const root = await repository();
 		await writeRepositoryFile(root, "dirty.ts", "dirty-v1\n");
