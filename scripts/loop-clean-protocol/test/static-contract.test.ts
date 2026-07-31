@@ -97,6 +97,10 @@ describe("production protocol contract", () => {
 			"LOOP_CLEAN_COMMIT_PER_ITER",
 			"commit-iter",
 			"cmd_commit_iter",
+			"scope_mode",
+			"--scope=audit",
+			"direction-block",
+			"drift_id",
 		];
 		for (const relativePath of allProductionPaths) {
 			const contents = read(relativePath);
