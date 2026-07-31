@@ -25,7 +25,10 @@ function mkFinding(overrides: Partial<Finding> = {}): Finding {
 	};
 }
 
-function mkReport(findings: Finding[]): CodingStandardsReport {
+function mkReport(
+	findings: Finding[],
+	scopeDigest = "a".repeat(64),
+): CodingStandardsReport {
 	const summary = {
 		critical: 0,
 		major: 0,
@@ -38,6 +41,7 @@ function mkReport(findings: Finding[]): CodingStandardsReport {
 	const blocking = summary.critical > 0 || summary.major > 0;
 	return {
 		skill: "coding-standards",
+		scope_digest: scopeDigest,
 		verdict: findings.length === 0 ? "CLEAN" : "ISSUES_FOUND",
 		findings,
 		summary,
@@ -98,13 +102,24 @@ describe("consolidate", () => {
 		expect(final.blocking).toBe(false);
 	});
 
-	it("deduplicates findings by id (keeps first occurrence)", () => {
-		const f = mkFinding({ id: "dddddddddddddddd", evidence: "scanner" });
-		const f2 = mkFinding({ id: "dddddddddddddddd", evidence: "agent" });
-		const final = consolidate(mkReport([f]), [mkReport([f2])]);
+	it("deduplicates byte-equivalent findings by id", () => {
+		const finding = mkFinding({ id: "dddddddddddddddd", evidence: "same" });
+		const final = consolidate(mkReport([finding]), [mkReport([finding])]);
 		expect(final.findings).toHaveLength(1);
-		// First occurrence wins (the scanner one).
-		expect(final.findings[0]?.evidence).toBe("scanner");
+	});
+
+	it("rejects one finding id with conflicting content", () => {
+		const scannerFinding = mkFinding({
+			id: "eeeeeeeeeeeeeeee",
+			evidence: "scanner",
+		});
+		const agentFinding = mkFinding({
+			id: "eeeeeeeeeeeeeeee",
+			evidence: "agent",
+		});
+		expect(() =>
+			consolidate(mkReport([scannerFinding]), [mkReport([agentFinding])]),
+		).toThrow(/conflicting content/i);
 	});
 
 	it("recomputes blocking based on merged findings", () => {
@@ -120,6 +135,13 @@ describe("consolidate", () => {
 		const f = mkFinding({ id: "abababababababab" });
 		const final = consolidate(mkReport([f]), []);
 		expect(final.findings).toHaveLength(1);
+		expect(final.scope_digest).toBe("a".repeat(64));
+	});
+
+	it("rejects a per-file report with a divergent scope digest", () => {
+		expect(() =>
+			consolidate(mkReport([]), [mkReport([], "b".repeat(64))]),
+		).toThrow(/scope_digest/i);
 	});
 });
 

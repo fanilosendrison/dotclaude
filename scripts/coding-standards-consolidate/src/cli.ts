@@ -13,10 +13,11 @@
  */
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
+	type CodingStandardsReport,
 	computeBlocking,
 	computeSummary,
-	type CodingStandardsReport,
 	type Finding,
 	parseReport,
 	validateReport,
@@ -61,19 +62,29 @@ export function consolidate(
 	perFileReports: readonly CodingStandardsReport[],
 ): CodingStandardsReport {
 	const byId = new Map<string, Finding>();
+	for (const report of perFileReports) {
+		if (report.scope_digest !== scannerReport.scope_digest) {
+			throw new Error(
+				`scope_digest mismatch: scanner=${scannerReport.scope_digest}, per-file=${report.scope_digest}`,
+			);
+		}
+	}
 
 	for (const f of scannerReport.findings) {
 		byId.set(f.id, f);
 	}
 	for (const report of perFileReports) {
-		for (const f of report.findings) {
-			if (byId.has(f.id)) {
-				console.warn(
-					`[coding-standards-consolidate] duplicate finding id ${f.id} (${f.file}:${f.line_start ?? "?"} ${f.axis}) — keeping first occurrence.`,
-				);
+		for (const finding of report.findings) {
+			const previous = byId.get(finding.id);
+			if (previous) {
+				if (!isDeepStrictEqual(previous, finding)) {
+					throw new Error(
+						`finding id ${finding.id} has conflicting content across coding-standards reports`,
+					);
+				}
 				continue;
 			}
-			byId.set(f.id, f);
+			byId.set(finding.id, finding);
 		}
 	}
 
@@ -83,6 +94,7 @@ export function consolidate(
 
 	return {
 		skill: "coding-standards",
+		scope_digest: scannerReport.scope_digest,
 		verdict: findings.length === 0 ? "CLEAN" : "ISSUES_FOUND",
 		findings,
 		summary,
