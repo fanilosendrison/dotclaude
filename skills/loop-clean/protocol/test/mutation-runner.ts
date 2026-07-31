@@ -12,7 +12,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
-const protocolRoot = resolve(import.meta.dir, "..");
 
 interface MutationDefinition {
 	readonly name: string;
@@ -35,6 +34,51 @@ async function replaceExactly(
 	await writeFile(path, contents.replace(oldText, newText));
 }
 
+async function requireTestPasses(
+	mutantRoot: string,
+	testFile: string,
+	label: string,
+): Promise<void> {
+	const processHandle = Bun.spawn(
+		["bun", "test", join(mutantRoot, "skills/loop-clean/protocol/test", testFile)],
+		{
+			cwd: join(mutantRoot, "skills/loop-clean/protocol"),
+			stdout: "pipe",
+			stderr: "pipe",
+		},
+	);
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(processHandle.stdout).text(),
+		new Response(processHandle.stderr).text(),
+		processHandle.exited,
+	]);
+	if (exitCode !== 0) {
+		throw new Error(
+			`${label} baseline failed before mutation was applied:\n${stdout}\n${stderr}`,
+		);
+	}
+}
+
+async function runMutatedTest(
+	mutantRoot: string,
+	testFile: string,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+	const processHandle = Bun.spawn(
+		["bun", "test", join(mutantRoot, "skills/loop-clean/protocol/test", testFile)],
+		{
+			cwd: join(mutantRoot, "skills/loop-clean/protocol"),
+			stdout: "pipe",
+			stderr: "pipe",
+		},
+	);
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(processHandle.stdout).text(),
+		new Response(processHandle.stderr).text(),
+		processHandle.exited,
+	]);
+	return { stdout, stderr, exitCode };
+}
+
 // ── Portable mutations: copy only skills/loop-clean/ ──
 
 async function copyPortableMutant(): Promise<string> {
@@ -48,7 +92,6 @@ async function copyPortableMutant(): Promise<string> {
 			filter: (src) => !src.includes("node_modules"),
 		},
 	);
-	// Install protocol dependencies in the mutant
 	const protocolDir = join(mutantRoot, "skills/loop-clean/protocol");
 	const installResult = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], {
 		cwd: protocolDir,
@@ -63,7 +106,7 @@ async function copyPortableMutant(): Promise<string> {
 	return mutantRoot;
 }
 
-// ── Repository mutations: copy what static-contract needs ──
+// ── Repository mutations: copy minimal dotclaude fixture ──
 
 async function copyRepositoryMutant(): Promise<string> {
 	const mutantRoot = await mkdtemp(
@@ -87,7 +130,7 @@ async function copyRepositoryMutant(): Promise<string> {
 		recursive: true,
 	});
 
-	// Copy only the skills referenced by static-contract
+	// Copy skills referenced by static-contract — these must exist
 	for (const skill of [
 		"fix-or-backlog",
 		"coding-standards",
@@ -95,36 +138,34 @@ async function copyRepositoryMutant(): Promise<string> {
 		"dedup-codebase",
 		"backlog-crush",
 		"backlog-deep-crush",
+		"lib",
 	]) {
 		const src = join(repositoryRoot, "skills", skill);
 		const dst = join(mutantRoot, "skills", skill);
-		try {
-			await cp(src, dst, { recursive: true });
-		} catch {
-			// Skill may not exist — that's fine
+		if (!existsSync(src)) {
+			throw new Error(`required skill fixture missing: ${src}`);
 		}
+		await cp(src, dst, { recursive: true });
 	}
 
-	// Copy scripts referenced by static-contract
+	// Copy scripts referenced by static-contract — these must exist
 	for (const scriptDir of [
 		"coding-standards-scanner",
 		"coding-standards-consolidate",
 	]) {
 		const src = join(repositoryRoot, "scripts", scriptDir);
-		const dst = join(mutantRoot, "scripts", scriptDir);
-		try {
-			await cp(src, dst, { recursive: true });
-		} catch {
-			// May not exist
+		if (existsSync(src)) {
+			await cp(src, join(mutantRoot, "scripts", scriptDir), { recursive: true });
 		}
 	}
 
-	await cp(
-		join(repositoryRoot, "scripts/package.json"),
-		join(mutantRoot, "scripts/package.json"),
-	);
+	const packageJsonSrc = join(repositoryRoot, "scripts/package.json");
+	if (!existsSync(packageJsonSrc)) {
+		throw new Error(`required fixture missing: scripts/package.json`);
+	}
+	await cp(packageJsonSrc, join(mutantRoot, "scripts/package.json"));
 
-	// Install protocol dependencies in the mutant
+	// Install protocol dependencies
 	const protocolDir = join(mutantRoot, "skills/loop-clean/protocol");
 	const installResult = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], {
 		cwd: protocolDir,
@@ -253,30 +294,26 @@ export const mutationNames = allMutations.map((m) => m.name) as readonly string[
 async function runMutationBatch(
 	mutations: readonly MutationDefinition[],
 	copyFn: () => Promise<string>,
-	testRoot: string,
+	label: string,
 ): Promise<readonly string[]> {
+	// Establish baseline: the unmutated fixture must pass
+	const baselineRoot = await copyFn();
+	try {
+		const baselineTest = mutations[0].testFile;
+		await requireTestPasses(baselineRoot, baselineTest, `${label} baseline`);
+	} finally {
+		await rm(baselineRoot, { recursive: true, force: true });
+	}
+
 	const detected: string[] = [];
 	for (const mutation of mutations) {
 		const mutantRoot = await copyFn();
 		try {
 			await mutation.apply(mutantRoot);
-			const processHandle = Bun.spawn(
-				[
-					"bun",
-					"test",
-					join(mutantRoot, testRoot, mutation.testFile),
-				],
-				{
-					cwd: join(mutantRoot, "skills/loop-clean/protocol"),
-					stdout: "pipe",
-					stderr: "pipe",
-				},
+			const { stdout, stderr, exitCode } = await runMutatedTest(
+				mutantRoot,
+				mutation.testFile,
 			);
-			const [stdout, stderr, exitCode] = await Promise.all([
-				new Response(processHandle.stdout).text(),
-				new Response(processHandle.stderr).text(),
-				processHandle.exited,
-			]);
 			if (exitCode === 0) {
 				throw new Error(
 					`mutation survived: ${mutation.name}\n${stdout}\n${stderr}`,
@@ -294,12 +331,12 @@ export async function runMutationSuite(): Promise<readonly string[]> {
 	const portableDetected = await runMutationBatch(
 		portableMutations,
 		copyPortableMutant,
-		"skills/loop-clean/protocol/test",
+		"portable",
 	);
 	const repositoryDetected = await runMutationBatch(
 		repositoryMutations,
 		copyRepositoryMutant,
-		"skills/loop-clean/protocol/test",
+		"repository",
 	);
 	return [...portableDetected, ...repositoryDetected];
 }

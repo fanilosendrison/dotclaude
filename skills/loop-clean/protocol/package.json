@@ -5,7 +5,7 @@
   "scripts": {
     "test": "bun test test/portable",
     "test:repository": "bun test test/repository",
-    "test:all": "bun run test && bun run test:repository",
+    "test:all": "bun run test && bun run test:repository && bun run mutation",
     "mutation": "bun test/mutation-runner.ts",
     "typecheck": "bun run tsc --noEmit"
   },

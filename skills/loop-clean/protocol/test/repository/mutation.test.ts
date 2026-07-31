@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mutationNames, runMutationSuite } from "./mutation-runner.ts";
+import { mutationNames, runMutationSuite } from "../mutation-runner.ts";
 
 test(
 	"the protocol test suite kills every registered mutation",
