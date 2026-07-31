@@ -22,3 +22,7 @@ package-lock.json
 
 # Sub-agent artefacts (pi, codex)
 .pi-subagents/
+
+# Local agent working dirs (safe to ignore)
+.claude/plans/
+.claude/sessions/
