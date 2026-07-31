@@ -152,11 +152,13 @@ async function copyRepositoryMutant(): Promise<string> {
 	for (const scriptDir of [
 		"coding-standards-scanner",
 		"coding-standards-consolidate",
+		"lib/coding-standards-schema",
 	]) {
 		const src = join(repositoryRoot, "scripts", scriptDir);
-		if (existsSync(src)) {
-			await cp(src, join(mutantRoot, "scripts", scriptDir), { recursive: true });
+		if (!existsSync(src)) {
+			throw new Error(`required script fixture missing: ${src}`);
 		}
+		await cp(src, join(mutantRoot, "scripts", scriptDir), { recursive: true });
 	}
 
 	const packageJsonSrc = join(repositoryRoot, "scripts/package.json");
@@ -296,13 +298,15 @@ async function runMutationBatch(
 	copyFn: () => Promise<string>,
 	label: string,
 ): Promise<readonly string[]> {
-	// Establish baseline: the unmutated fixture must pass
-	const baselineRoot = await copyFn();
-	try {
-		const baselineTest = mutations[0].testFile;
-		await requireTestPasses(baselineRoot, baselineTest, `${label} baseline`);
-	} finally {
-		await rm(baselineRoot, { recursive: true, force: true });
+	// Establish baseline for every unique test file used by mutations
+	const baselineTests = [...new Set(mutations.map((m) => m.testFile))];
+	for (const testFile of baselineTests) {
+		const baselineRoot = await copyFn();
+		try {
+			await requireTestPasses(baselineRoot, testFile, `${label} baseline ${testFile}`);
+		} finally {
+			await rm(baselineRoot, { recursive: true, force: true });
+		}
 	}
 
 	const detected: string[] = [];
