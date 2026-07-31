@@ -147,6 +147,24 @@ cmd_init() {
 		echo "ERROR: failed to capture Git invariants" >&2
 		exit 4
 	fi
+	local baseline_file="$run_dir/git-baseline.json"
+	if [[ ! -s "$baseline_file" ]] || ! jq -e '
+		.schema_version == 1
+		and (
+			.head == "UNBORN"
+			or (
+				(.head | type) == "string"
+				and (.head | test("^[0-9a-f]{40,64}$"))
+			)
+		)
+		and (
+			(.index_digest | type) == "string"
+			and (.index_digest | test("^[0-9a-f]{64}$"))
+		)
+	' "$baseline_file" >/dev/null; then
+		echo "ERROR: protocol CLI did not produce a valid Git baseline" >&2
+		exit 4
+	fi
 	printf '{"schema_version":1,"entries":[]}\n' > "$run_dir/deferred-findings.json"
 	if ! GIT_OPTIONAL_LOCKS=0 git -C "$repository_root" check-ignore -q -- ".claude/run/loop-clean/$session_id"; then
 		cat >&2 <<'WARNING'
