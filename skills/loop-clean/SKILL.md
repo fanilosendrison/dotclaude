@@ -1,107 +1,59 @@
 ---
 name: loop-clean
 description: >
-  Boucle deterministe post-implementation : enchaine
-  coding-standards → senior-review → dedup-codebase → spec-drift →
-  fix-or-backlog jusqu'a convergence CLEAN, detection d'oscillation,
-  ou plafond d'iterations. Modes : `diff` (fichiers modifies, defaut)
-  ou `audit` (repo complet).
-  Use when the user says "loop-clean", "boucle clean", "nettoyage boucle",
-  "post-implementation loop", or any variant requesting a deterministic
-  iterative cleanup of findings until convergence.
+  Runs a deterministic post-implementation loop over every uncommitted change
+  in the nearest Git repository. Uses coding-standards, senior-review,
+  dedup-codebase, and runtime-gate reports, then routes actionable findings
+  through fix-or-backlog until clean, handled, oscillating, or capped.
 ---
 
-# loop-clean
+# Loop Clean
 
-Delegue l'orchestration a l'agent **`loop-clean-orchestrator`** (model et
-effort pinnes via frontmatter).
+Delegate the complete run to the `loop-clean-orchestrator` agent. Do not execute
+semantic review steps in the parent session.
 
-## Quand declencher
+## Invocation contract
 
-- L'utilisateur tape `/loop-clean`
-- L'utilisateur demande "boucle la post-implementation", "itere jusqu'au clean",
-  "tourne jusqu'a convergence", ou toute variante
+Accept `/loop-clean` with no mode argument. Reject unknown arguments clearly.
+In particular, do not reinterpret an extra argument as a different scope.
 
-Ne PAS declencher :
-- Apres un simple `/senior-review` (ponctuel)
-- Pour un audit one-shot sans intention d'appliquer les fixes
+A run has exactly one scope:
 
-## Detection du mode depuis `ARGUMENTS`
-
-- Si `ARGUMENTS` contient le mot `audit` (case-insensitive, mot entier) →
-  `scope_mode=audit` (repo complet via `--scope=all`).
-- Sinon → `scope_mode=diff` (fichiers modifies / staged, cas standard
-  post-implementation).
-
-Exemples :
-- `/loop-clean` → `diff`
-- `/loop-clean audit` → `audit`
-- `/loop-clean audit complet codebase` → `audit`
-- `/loop-clean sur <worktree>` → `diff` (pas de mot `audit`)
+- Resolve the nearest Git repository once at initialization.
+- Include every staged, unstaged, untracked, renamed, copied, deleted, and
+  unmerged change in that repository.
+- Exclude Git-ignored paths.
+- Recompute the manifest at every iteration.
+- Bind both Git status metadata and current path contents into the manifest
+  `digest`; persist the independent `content_digest` for fail-closed checks.
+- Keep ledger paths in the manifest with `eligible_for_audit=false`.
+- Never cross into a nested repository or submodule. Run loop-clean from that
+  repository when it needs its own audit.
 
 ## Procedure
 
-Lancer l'agent orchestrateur avec le `scope_mode` resolu :
+Invoke the pinned orchestrator without overriding its model or effort:
 
-```
+```text
 Agent({
   subagent_type: "loop-clean-orchestrator",
   description: "Run /loop-clean",
-  prompt: "Lance la boucle loop-clean complete selon ta procedure avec scope_mode=<diff|audit>. Suis-la integralement jusqu'a terminaison (EXIT_CLEAN, EXIT_OSCILLATION, ou EXIT_CEILING). Retourne le rapport markdown final de l'etape finalize, enrichi d'une note sur le WARNING .gitignore si applicable, et d'une note sur le WARNING scope vide si applicable."
+  prompt: "Run the complete loop-clean protocol in the nearest Git repository. Continue until a terminal EXIT_* action, always finalize, and return the finalize report verbatim."
 })
 ```
 
-**Ne PAS passer de `model` ou `effort` override** — laisser le frontmatter de
-l'agent decider (determinisme).
+Return the orchestrator's final Markdown report without adding a second,
+potentially inconsistent summary.
 
-Presenter a l'utilisateur le rapport markdown retourne par l'agent, tel quel.
+## Invariants
 
-## Sticky `BASE_SHA` (mode `diff`)
-
-Le `BASE_SHA` qui sert d'ancre au scope `diff` est **persistant par repo**, hors
-de `$RUN_DIR/<PID>/` (volatile). Il est stocke dans :
-
-```
-~/.claude/run/loop-clean/sessions/<repo-id>/base-sha
-```
-
-ou `<repo-id>` est un hash du `git rev-parse --show-toplevel`.
-
-**Resolution au premier `init`** (sticky absent ou invalide) :
-- `merge-base origin/<default-branch> HEAD` si distinct de HEAD
-  (couvre feature branches et worktrees backlog-crush / backlog-deep-crush)
-- Sinon `HEAD` (cas main direct deja synchronise avec origin)
-
-**Inits suivants** : reutilise le sticky tant qu'il reste un ancetre de HEAD.
-Cela garantit que des commits / push intermediaires n'avancent PAS l'ancre :
-le scope reste l'ensemble du chantier en cours.
-
-**Avancement automatique quand l'audit est "done"** : a la fin de
-`finalize`, le sticky est avance a HEAD si :
-- aucune regression test/lint/typecheck pendant la boucle, ET
-- soit `EXIT_CLEAN` (zero finding), soit chaque finding du dernier iter a
-  ete handled (fix-now applique, backlogged, escalated, ou ajoute a
-  design-queue).
-
-Le second cas couvre `EXIT_OSCILLATION` / `EXIT_CEILING` quand la boucle a
-stagne uniquement parce que les findings restants sont deja traces
-ailleurs (backlog.md, design-queue.md). Re-auditer ces fichiers au run
-suivant ne ferait que redecouvrir des items deja sur une liste.
-
-Sticky **non avance** si une regression est detectee, ou si le dernier
-iter a des findings non handled (`fix-or-backlog` n'a ni fixe ni
-classe). Ces findings restent alors dans le scope du run suivant.
-
-**Reinitialisation manuelle** :
-
-```bash
-bash skills/loop-clean/loop-clean.sh reset                  # drop le sticky
-bash skills/loop-clean/loop-clean.sh reset --from HEAD~3    # ancre N commits en arriere
-bash skills/loop-clean/loop-clean.sh reset --from <sha>     # ancre sur un sha precis
-```
-
-A utiliser quand le sticky est trop vieux (chantier termine) ou quand le
-scope `diff` ressort vide alors qu'on attend des fichiers (typique du cas
-"Claude a commit + push avant le premier `/loop-clean`" : le sticky a ete
-pose sur HEAD post-commit, donc `--from HEAD~N` permet de remonter avant
-les commits a auditer).
+- Treat `scope.json` as the only scope definition for an iteration.
+- Treat `findings.json` as the only decision and routing input.
+- Require exactly four canonical sources: `coding-standards`, `senior-review`,
+  `dedup-codebase`, and `runtime-gate`.
+- Run the runtime gate before collection and before decision.
+- Write `backlog.md` and `design-queue.md` only through their absolute paths at
+  the resolved Git root.
+- Never alter HEAD or the Git index.
+- Never create repository history or publish repository state.
+- Report protocol violations instead of attempting automatic recovery.

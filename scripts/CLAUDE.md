@@ -12,6 +12,7 @@ scripts/
 ├── commit-msg-validator/   # Conventional Commits validation (PreToolUse hook)
 ├── hook-utils/             # Shared types & I/O helpers for hooks
 ├── index-repo/             # Repo indexer CLI
+├── loop-clean-protocol/    # Deterministic scope/findings/routing/Git protocol
 ├── post-write-linter/      # Auto lint/format/typecheck on Write/Edit (PostToolUse hook)
 ├── secret-scanner/         # Secret detection in staged files (PreToolUse hook)
 ├── statusline/             # Custom statusline for Claude Code
@@ -21,7 +22,7 @@ scripts/
 ## Commands
 
 ```bash
-bun run test              # Run ALL tests (202 tests)
+bun run test              # Run all tests
 bun run lint              # Lint all packages
 ```
 
@@ -36,6 +37,7 @@ bun run lint              # Lint all packages
 | secret-scanner | `bun run secret-scanner:test` | `bun run secret-scanner:cli` |
 | hook-utils | — | — |
 | index-repo | `bun run indexer:test` | `bun run indexer:cli` |
+| loop-clean-protocol | `bun run loop-clean-protocol:test` | `bun loop-clean-protocol/src/cli.ts` |
 | post-write-linter | `bun run post-write-linter:test` | `bun run post-write-linter:cli` |
 | statusline | `bun run statusline:test` | `bun run statusline:start` |
 

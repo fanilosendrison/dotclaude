@@ -18,6 +18,15 @@ dotclaude/
 └── README.md
 ```
 
+## Loop-clean protocol
+
+`/loop-clean` operates on every non-ignored, uncommitted change in the nearest
+Git repository. Staged, unstaged, untracked, renamed, and deleted paths share one
+manifest per iteration. Four canonical producers run against that manifest, with
+the runtime gate completing before canonical collection and decision. The loop
+never changes HEAD or the Git index and writes deferred items only to ledger paths
+resolved from the Git root.
+
 ## Status
 
 Personal workspace — published for CI/CD reuse, not maintained as a project.
