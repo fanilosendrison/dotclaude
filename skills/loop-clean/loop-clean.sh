@@ -143,13 +143,15 @@ cmd_init() {
 	_cleanup_old_runs
 	local baseline_file="$run_dir/git-baseline.json"
 	local baseline_tmp="$run_dir/.git-baseline.json.tmp.$$"
+	local deferred_file="$run_dir/deferred-findings.json"
+	local deferred_tmp="$run_dir/.deferred-findings.json.tmp.$$"
 
-	rm -f "$baseline_tmp"
+	rm -f "$baseline_tmp" "$deferred_tmp"
 
 	if ! _run_protocol capture-git \
 		--repo-root "$repository_root" \
 		--output "$baseline_tmp"; then
-		rm -f "$baseline_tmp"
+		rm -f "$baseline_tmp" "$deferred_tmp"
 		echo "ERROR: failed to capture Git invariants" >&2
 		exit 4
 	fi
@@ -168,13 +170,31 @@ cmd_init() {
 			and (.index_digest | test("^[0-9a-f]{64}$"))
 		)
 	' "$baseline_tmp" >/dev/null; then
-		rm -f "$baseline_tmp"
+		rm -f "$baseline_tmp" "$deferred_tmp"
 		echo "ERROR: protocol CLI did not produce a valid Git baseline" >&2
 		exit 4
 	fi
 
-	mv "$baseline_tmp" "$baseline_file"
-	printf '{"schema_version":1,"entries":[]}\n' > "$run_dir/deferred-findings.json"
+	# Prepare all non-marker artifacts before publishing the commit marker.
+	if ! printf '{"schema_version":1,"entries":[]}\n' > "$deferred_tmp"; then
+		rm -f "$baseline_tmp" "$deferred_tmp"
+		echo "ERROR: failed to initialize deferred findings" >&2
+		exit 4
+	fi
+
+	if ! mv "$deferred_tmp" "$deferred_file"; then
+		rm -f "$baseline_tmp" "$deferred_tmp"
+		echo "ERROR: failed to publish deferred findings" >&2
+		exit 4
+	fi
+
+	# Publish the commit marker last. Its presence guarantees that every
+	# artifact under the run directory is fully initialized.
+	if ! mv "$baseline_tmp" "$baseline_file"; then
+		rm -f "$baseline_tmp"
+		echo "ERROR: failed to publish Git baseline" >&2
+		exit 4
+	fi
 	if ! GIT_OPTIONAL_LOCKS=0 git -C "$repository_root" check-ignore -q -- ".claude/run/loop-clean/$session_id"; then
 		cat >&2 <<'WARNING'
 WARNING: .claude/run/ is not ignored at the resolved Git root.

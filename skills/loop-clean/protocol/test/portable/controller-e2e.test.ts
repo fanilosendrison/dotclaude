@@ -652,6 +652,25 @@ if (command === "capture-git" && args.output) {
 
 		const runDir = join(root, ".claude/run/loop-clean", sessionId);
 		expect(existsSync(join(runDir, "git-baseline.json"))).toBe(true);
+		// Commit marker present → all artifacts must be present.
+		expect(existsSync(join(runDir, "deferred-findings.json"))).toBe(true);
+	});
+
+	test("a successful init publishes every artifact before the commit marker", async () => {
+		const root = await createLoopRepository();
+		const context = await startRun({ root });
+		const runDir = context.environment.LOOP_CLEAN_RUN_DIR;
+
+		// Invariant: if git-baseline.json exists, deferred-findings.json must exist.
+		expect(existsSync(join(runDir, "git-baseline.json"))).toBe(true);
+		expect(existsSync(join(runDir, "deferred-findings.json"))).toBe(true);
+
+		// deferred-findings.json must be valid JSON with the expected schema.
+		const deferred = JSON.parse(
+			await readFile(join(runDir, "deferred-findings.json"), "utf8"),
+		);
+		expect(deferred.schema_version).toBe(1);
+		expect(Array.isArray(deferred.entries)).toBe(true);
 	});
 
 	test("CLI crash does not leave a partial baseline file", async () => {
