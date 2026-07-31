@@ -5,10 +5,8 @@ import { type OrchestratorConfig, runOrchestrator } from "turnlock";
 import { checkPrerequisites } from "../required-tools-checker/required-tools-checker";
 import { installTools } from "../tools-installer/tools-installer";
 import {
-	createPhaseCheck,
 	createPhaseConsumeAgentResult,
-	createPhaseInstall,
-	createPhaseRecheck,
+	createPhaseOnboard,
 	initialState,
 	type State,
 } from "./phases";
@@ -28,12 +26,15 @@ const realCheckPrerequisites = (): ReturnType<typeof checkPrerequisites> =>
 
 const config: OrchestratorConfig<State> = {
 	name: "new-cc-project-onboarder",
-	initial: "check",
+	initial: "onboard",
 	phases: {
-		check: createPhaseCheck({ checkPrerequisites: realCheckPrerequisites }),
-		install: createPhaseInstall({ installTools }),
-		"consume-agent-result": createPhaseConsumeAgentResult(),
-		recheck: createPhaseRecheck({ checkPrerequisites: realCheckPrerequisites }),
+		onboard: createPhaseOnboard({
+			checkPrerequisites: realCheckPrerequisites,
+			installTools,
+		}),
+		"consume-agent-result": createPhaseConsumeAgentResult({
+			checkPrerequisites: realCheckPrerequisites,
+		}),
 	},
 	initialState,
 	resumeCommand: (runId) =>

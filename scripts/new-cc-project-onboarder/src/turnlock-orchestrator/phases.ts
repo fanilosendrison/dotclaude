@@ -1,4 +1,4 @@
-import type { Phase } from "turnlock";
+import type { Phase, PhaseIO, PhaseResult } from "turnlock";
 import { z } from "zod";
 
 import type {
@@ -11,10 +11,6 @@ import type {
 	ToolConfig,
 } from "../tools-installer/tools-installer";
 
-// ---------------------------------------------------------------------------
-// Sub-agent result schema (each entry of the agent-batch fan-in)
-// ---------------------------------------------------------------------------
-
 export const SingleAgentResultSchema = z.object({
 	name: z.string(),
 	status: z.enum(["installed", "failed"]),
@@ -24,10 +20,6 @@ export const SingleAgentResultSchema = z.object({
 });
 
 export type SingleAgentResult = z.infer<typeof SingleAgentResultSchema>;
-
-// ---------------------------------------------------------------------------
-// State shared across phases
-// ---------------------------------------------------------------------------
 
 export interface State {
 	os_label: string;
@@ -45,147 +37,134 @@ export const initialState: State = {
 	recheck_after_fallback: false,
 };
 
-// ---------------------------------------------------------------------------
-// Phase: check
-// ---------------------------------------------------------------------------
-
-export function createPhaseCheck(deps: {
+interface OnboardDependencies {
 	checkPrerequisites: () => Promise<CheckResult>;
-}): Phase<State> {
-	return async (state, io) => {
-		const result = await deps.checkPrerequisites();
-
-		if (result.status === "unsupported_platform") {
-			return io.fail(
-				new Error(
-					`unsupported_platform: ${result.os.label} (only darwin is supported)`,
-				),
-			);
-		}
-
-		if (result.status === "ok") {
-			return io.done({ ok: true });
-		}
-
-		return io.transition("install", {
-			...state,
-			os_label: result.os.label,
-			missing_tools: result.missing,
-		});
-	};
+	installTools: (tools: readonly ToolConfig[]) => Promise<InstallResults>;
 }
 
-// ---------------------------------------------------------------------------
-// Phase: install (mechanical) → fan-out to fallback batch on partial failure
-// ---------------------------------------------------------------------------
+function finishCheckResult(
+	result: CheckResult,
+	io: PhaseIO<State>,
+): PhaseResult<State> {
+	if (result.status === "ok") return io.done({ ok: true });
+	if (result.status === "unsupported_platform") {
+		return io.fail(
+			new Error(
+				`unsupported_platform: ${result.os.label} (only darwin is supported)`,
+			),
+		);
+	}
+	const stillMissing = result.missing.map((tool) => tool.name).join(", ");
+	return io.fail(
+		new Error(`tools still missing after installation: ${stillMissing}`),
+	);
+}
 
-export function createPhaseInstall(deps: {
-	installTools: (tools: readonly ToolConfig[]) => Promise<InstallResults>;
-}): Phase<State> {
-	return async (state, io) => {
-		// Look up the install methods for each missing tool. A tool with no
-		// configured methods is passed through with `methods: []` so installTools
-		// records an empty attempts array (immediate failure → routed to agent).
-		const toolConfigs: ToolConfig[] = state.missing_tools.map((t) => ({
-			name: t.name,
-			methods: INSTALL_METHODS[t.name] ?? [],
+function buildToolConfigs(missingTools: readonly MissingTool[]): ToolConfig[] {
+	return missingTools.map((tool) => ({
+		name: tool.name,
+		methods: INSTALL_METHODS[tool.name] ?? [],
+	}));
+}
+
+function buildFallbackJobs(
+	results: InstallResults,
+	osLabel: string,
+): Array<{
+	readonly id: string;
+	readonly prompt: string;
+}> {
+	return Object.entries(results)
+		.filter(([, result]) => !result.ok)
+		.map(([name, result]) => ({
+			id: name,
+			prompt: JSON.stringify(
+				{
+					os_label: osLabel,
+					tool: {
+						name,
+						methods_tried: result.attempts.map((attempt) => ({
+							id: attempt.id,
+							exit_code: attempt.exit_code,
+							stderr: attempt.stderr,
+							verify_exit_code: attempt.verify_exit_code,
+						})),
+					},
+				},
+				null,
+				2,
+			),
 		}));
+}
 
-		const results = await deps.installTools(toolConfigs);
-
-		const failedNames = Object.entries(results)
-			.filter(([, r]) => !r.ok)
-			.map(([name]) => name);
-
-		if (failedNames.length === 0) {
-			return io.transition("recheck", {
-				...state,
-				install_results: results,
-				recheck_after_fallback: false,
-			});
+/**
+ * Execute every mechanical step in one phase. Turnlock phases yield only at a
+ * durable boundary, so check, installation, and successful recheck stay in the
+ * same phase; a fallback batch is the only suspension point.
+ */
+export function createPhaseOnboard(deps: OnboardDependencies): Phase<State> {
+	return async (state, io) => {
+		const initialCheck = await deps.checkPrerequisites();
+		if (initialCheck.status !== "missing_tools") {
+			return finishCheckResult(initialCheck, io);
 		}
 
-		// For each failed tool, hand the agent the FULL methods_tried history
-		// (every method, every stderr) so it can reason about the failure pattern
-		// rather than just the last attempt.
-		const jobs = failedNames.map((name) => {
-			const installResult = results[name];
-			const payload = {
-				os_label: state.os_label,
-				tool: {
-					name,
-					methods_tried: installResult.attempts.map((a) => ({
-						id: a.id,
-						exit_code: a.exit_code,
-						stderr: a.stderr,
-						verify_exit_code: a.verify_exit_code,
-					})),
-				},
-			};
-			return {
-				id: name,
-				prompt: JSON.stringify(payload, null, 2),
-			};
-		});
+		const installResults = await deps.installTools(
+			buildToolConfigs(initialCheck.missing),
+		);
+		const fallbackJobs = buildFallbackJobs(
+			installResults,
+			initialCheck.os.label,
+		);
+		if (fallbackJobs.length === 0) {
+			return finishCheckResult(await deps.checkPrerequisites(), io);
+		}
 
-		return io.delegateAgentBatch(
+		return io.delegateBatch(
 			{
-				kind: "agent-batch",
-				agentType: "installing-missing-tools-fallback",
-				jobs,
+				kind: "batch",
+				worker: "installing-missing-tools-fallback",
+				jobs: fallbackJobs,
 				label: "tools-fallback-batch",
 			},
 			"consume-agent-result",
 			{
 				...state,
-				install_results: results,
+				os_label: initialCheck.os.label,
+				missing_tools: initialCheck.missing,
+				install_results: installResults,
 			},
 		);
 	};
 }
 
-// ---------------------------------------------------------------------------
-// Phase: consume-agent-result — fan-in
-// ---------------------------------------------------------------------------
-
-export function createPhaseConsumeAgentResult(): Phase<State> {
-	return async (state, io) => {
-		const results = io.consumePendingBatchResults(SingleAgentResultSchema);
-
-		const agent_result: Record<string, SingleAgentResult> = {};
-		for (const r of results) {
-			agent_result[r.name] = r;
-		}
-
-		return io.transition("recheck", {
-			...state,
-			agent_result,
-			recheck_after_fallback: true,
-		});
-	};
-}
-
-// ---------------------------------------------------------------------------
-// Phase: recheck — verify the system actually has the tools now
-// ---------------------------------------------------------------------------
-
-export function createPhaseRecheck(deps: {
+export function createPhaseConsumeAgentResult(deps: {
 	checkPrerequisites: () => Promise<CheckResult>;
 }): Phase<State> {
 	return async (_state, io) => {
-		const result = await deps.checkPrerequisites();
+		// The consumer currently resolves Zod v4 while Turnlock 0.10 exposes a
+		// Zod v3 type. Both provide the safeParse contract used by Turnlock; this
+		// boundary cast avoids weakening types anywhere else in the phase.
+		const compatibleSchema = SingleAgentResultSchema as unknown as Parameters<
+			PhaseIO<State>["consumePendingBatchResults"]
+		>[0];
+		const rawResults = io.consumePendingBatchResults(compatibleSchema);
+		const results = rawResults.map((value) =>
+			SingleAgentResultSchema.parse(value),
+		);
+		const agentResult: Record<string, SingleAgentResult> = {};
+		for (const result of results) agentResult[result.name] = result;
 
-		if (result.status === "ok") {
-			return io.done({ ok: true });
+		const recheck = await deps.checkPrerequisites();
+		if (recheck.status === "ok") {
+			return io.done({ ok: true, agent_result: agentResult });
 		}
-
-		if (result.status === "unsupported_platform") {
+		if (recheck.status === "unsupported_platform") {
 			return io.fail(
-				new Error(`unsupported_platform on recheck: ${result.os.label}`),
+				new Error(`unsupported_platform on recheck: ${recheck.os.label}`),
 			);
 		}
-
-		const stillMissing = result.missing.map((t) => t.name).join(", ");
+		const stillMissing = recheck.missing.map((tool) => tool.name).join(", ");
 		return io.fail(
 			new Error(`tools still missing after fallback: ${stillMissing}`),
 		);
