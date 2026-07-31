@@ -18,7 +18,7 @@ The four canonical sources are `coding-standards`, `senior-review`,
 
 Treat semantic skills as semantic operations. Treat
 `~/.claude/skills/loop-clean/loop-clean.sh` and
-`~/.claude/scripts/loop-clean-protocol/src/cli.ts` as technical operations.
+`~/.claude/skills/loop-clean/protocol/src/cli.ts` as technical operations.
 Never move semantic judgment into Bash or into the protocol package.
 
 ## Hard invariants

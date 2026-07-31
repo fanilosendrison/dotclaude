@@ -47,4 +47,4 @@ coding-standards-scanner/
 
 The output schema comes from `scripts/lib/coding-standards-schema`. The
 loop-clean protocol manifest schema comes from
-`scripts/loop-clean-protocol/src/scope/scope-schema.ts`.
+`skills/loop-clean/protocol/src/scope/scope-schema.ts`.
