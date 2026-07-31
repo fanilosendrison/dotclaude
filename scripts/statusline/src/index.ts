@@ -33,7 +33,25 @@ type GetUsageLimitsFn = () => Promise<GetUsageLimitsResult>;
 type NormalizeResetsAtFn = (resetsAt: string) => string;
 type GetPeriodCostFn = (periodId: string) => number;
 type GetTodayCostV2Fn = () => number;
-type SaveSessionV2Fn = (input: HookInput, currentResetsAt?: string) => Promise<void>;
+type SaveSessionV2Fn = (
+	input: HookInput,
+	currentResetsAt?: string,
+) => Promise<void>;
+
+interface LimitsFeatureModule {
+	getUsageLimits: GetUsageLimitsFn;
+}
+
+interface SpendFeatureModule {
+	getPeriodCost: GetPeriodCostFn;
+	getTodayCostV2: GetTodayCostV2Fn;
+	saveSessionV2: SaveSessionV2Fn;
+}
+
+// Keep specifiers non-literal so TypeScript accepts intentionally absent
+// optional modules. Runtime shape assertions remain explicit below.
+const limitsFeatureSpecifier = "./lib/features/limits";
+const spendFeatureSpecifier = "./lib/features/spend";
 
 // Optional feature imports - just delete the folder to disable!
 let getUsageLimits: GetUsageLimitsFn | null = null;
@@ -43,7 +61,9 @@ let getTodayCostV2: GetTodayCostV2Fn | null = null;
 let saveSessionV2: SaveSessionV2Fn | null = null;
 
 try {
-	const limitsModule = await import("./lib/features/limits");
+	const limitsModule = (await import(
+		limitsFeatureSpecifier
+	)) as unknown as LimitsFeatureModule;
 	getUsageLimits = limitsModule.getUsageLimits;
 } catch {
 	// Limits feature not available - that's OK!
@@ -58,7 +78,9 @@ try {
 }
 
 try {
-	const spendModule = await import("./lib/features/spend");
+	const spendModule = (await import(
+		spendFeatureSpecifier
+	)) as unknown as SpendFeatureModule;
 	getPeriodCost = spendModule.getPeriodCost;
 	getTodayCostV2 = spendModule.getTodayCostV2;
 	saveSessionV2 = spendModule.saveSessionV2;
@@ -69,7 +91,9 @@ try {
 // Re-export from render-pure for backwards compatibility
 export { renderStatusline, type StatuslineData } from "./lib/render-pure";
 
-async function getPermissionMode(projectDir: string): Promise<string | undefined> {
+async function getPermissionMode(
+	projectDir: string,
+): Promise<string | undefined> {
 	// Project-level settings override global
 	const projectSettings = join(projectDir, ".claude", "settings.local.json");
 	try {
