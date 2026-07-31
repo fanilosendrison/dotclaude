@@ -252,11 +252,11 @@ describe("production protocol contract", () => {
 
 	test("all protocol CLI calls go through _run_protocol with --no-install", () => {
 		const shellScript = read("skills/loop-clean/loop-clean.sh");
-		// The _run_protocol helper centralizes bun --no-install
-		expect(shellScript).toContain("_run_protocol() {");
-		expect(shellScript).toContain("bun --no-install");
-		// Remove the _run_protocol function body (lines from "_run_protocol() {"
-		// through the closing "}") before checking for bare bun calls
+		// The _run_protocol helper must contain the exact bun --no-install invocation
+		expect(shellScript).toMatch(
+			/_run_protocol\(\)\s*\{\s*bun --no-install "\$PROTOCOL_CLI" "\$@"\s*\}/m,
+		);
+		// Remove the _run_protocol function body before checking for bare bun calls
 		const lines = shellScript.split("\n");
 		const filtered: string[] = [];
 		let inHelper = false;
