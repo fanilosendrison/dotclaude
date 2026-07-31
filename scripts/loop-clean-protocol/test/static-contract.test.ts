@@ -80,13 +80,7 @@ describe("production protocol contract", () => {
 			"skills/senior-review/**",
 			"skills/dedup-codebase/**",
 		];
-		const productionFiles = [
-			"agents/loop-clean-orchestrator.md",
-			"agents/coding-standards-file.md",
-			"agents/senior-review-file.md",
-			"agents/dedup-codebase-file.md",
-			"agents/fix-file.md",
-		];
+		const productionAgentGlobs = ["agents/**"];
 		const productionSourceGlobs = [
 			"scripts/loop-clean-protocol/src/**",
 			"scripts/coding-standards-scanner/src/**",
@@ -94,22 +88,21 @@ describe("production protocol contract", () => {
 		];
 		const allProductionPaths = [
 			...productionGlobs.flatMap((g) => globFiles(repositoryRoot, g)),
-			...productionFiles.filter((f) => existsSync(resolve(repositoryRoot, f))),
+			...productionAgentGlobs.flatMap((g) => globFiles(repositoryRoot, g)),
 			...productionSourceGlobs.flatMap((g) => globFiles(repositoryRoot, g)),
 			"scripts/package.json",
 		];
-		const forbiddenProductionTerms = [
+		const forbiddenLiteralTerms = [
 			"LOOP_CLEAN_BASE_SHA",
 			"LOOP_CLEAN_COMMIT_PER_ITER",
 			"commit-iter",
 			"cmd_commit_iter",
-			"spec-drift",
-			"spec drift",
 		];
 		for (const relativePath of allProductionPaths) {
 			const contents = read(relativePath);
-			for (const term of forbiddenProductionTerms)
+			for (const term of forbiddenLiteralTerms)
 				expect(contents).not.toContain(term);
+			expect(contents).not.toMatch(/spec[-_ ]drift/i);
 		}
 		expect(existsSync(resolve(repositoryRoot, "scripts/spec-drift"))).toBe(
 			false,
