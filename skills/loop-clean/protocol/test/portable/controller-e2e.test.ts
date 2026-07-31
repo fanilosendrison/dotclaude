@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -714,7 +714,49 @@ if (command === "capture-git" && args.output) {
 	test("concurrent init with same session ID: exactly one claims the marker", async () => {
 		const root = await createLoopRepository();
 		const sessionId = `concurrent-${process.pid}-${sessionCounter++}`;
-		const env = { LOOP_CLEAN_SESSION_ID: sessionId };
+		const coordDir = await mkdtemp(join(tmpdir(), "loop-clean-barrier-"));
+		externalDirectories.push(coordDir);
+
+		// Barrier mock CLI: both processes signal readiness, then wait until
+		// both are ready before writing the baseline.  This guarantees they
+		// both pass the pre-check and actually race on the ln marker claim.
+		const mockDir = await mkdtemp(join(tmpdir(), "loop-clean-barrier-cli-"));
+		externalDirectories.push(mockDir);
+		const mockCli = join(mockDir, "barrier-cli.ts");
+		await writeFile(
+			mockCli,
+			`import { readdirSync } from "node:fs";
+
+const coord = process.env.MOCK_COORDINATION_DIR!;
+await Bun.write(\`\${coord}/ready-\${process.pid}\`, "");
+
+// Busy-wait until both callers are ready.
+while (readdirSync(coord).length < 2) {
+  await new Promise((r) => setTimeout(r, 5));
+}
+
+const [, , command, ...rest] = process.argv;
+const args: Record<string, string> = {};
+for (let i = 0; i < rest.length; i++) {
+  if (rest[i] === "--output") args.output = rest[++i];
+  else if (rest[i] === "--repo-root") args["repo-root"] = rest[++i];
+}
+if (command === "capture-git" && args.output) {
+  await Bun.write(args.output, JSON.stringify({
+    schema_version: 1,
+    head: "0000000000000000000000000000000000000000",
+    index_digest: "0000000000000000000000000000000000000000000000000000000000000000",
+  }));
+}
+`,
+		);
+		await chmod(mockCli, 0o755);
+
+		const env = {
+			LOOP_CLEAN_SESSION_ID: sessionId,
+			LOOP_CLEAN_PROTOCOL_CLI: mockCli,
+			MOCK_COORDINATION_DIR: coordDir,
+		};
 
 		const [a, b] = await Promise.all([
 			runProcess(["bash", controller, "init"], { cwd: root, env }),
@@ -732,5 +774,38 @@ if (command === "capture-git" && args.output) {
 		const runDir = join(root, ".claude/run/loop-clean", sessionId);
 		expect(existsSync(join(runDir, "git-baseline.json"))).toBe(true);
 		expect(existsSync(join(runDir, "deferred-findings.json"))).toBe(true);
+
+		// No temp files must remain after init.
+		for (const entry of readdirSync(runDir)) {
+			expect(entry).not.toMatch(/^\..*\.tmp\./);
+		}
+	}, 30_000);
+
+	test("ln infrastructure failure returns exit 4, not exit 2", async () => {
+		const root = await createLoopRepository();
+		const sessionId = `lnfail-${process.pid}-${sessionCounter++}`;
+
+		// Mock ln that always fails without creating its destination.
+		const mockBinDir = await mkdtemp(join(tmpdir(), "loop-clean-ln-mock-"));
+		externalDirectories.push(mockBinDir);
+		const mockLn = join(mockBinDir, "ln");
+		await writeFile(mockLn, "#!/usr/bin/env bash\nexit 1\n");
+		await chmod(mockLn, 0o755);
+
+		const result = await runProcess(["bash", controller, "init"], {
+			cwd: root,
+			env: {
+				LOOP_CLEAN_SESSION_ID: sessionId,
+				PATH: `${mockBinDir}:${process.env.PATH ?? ""}`,
+			},
+		});
+
+		expect(result.exitCode).toBe(4);
+		expect(result.stderr).toMatch(/failed to publish Git baseline/);
+		expect(result.stderr).not.toMatch(/already initialized|concurrently claimed/);
+
+		// No final baseline must exist (ln never created it).
+		const runDir = join(root, ".claude/run/loop-clean", sessionId);
+		expect(existsSync(join(runDir, "git-baseline.json"))).toBe(false);
 	});
 });
