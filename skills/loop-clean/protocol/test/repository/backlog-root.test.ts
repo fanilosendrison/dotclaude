@@ -7,9 +7,9 @@ import {
 	removeRepository,
 	runProcess,
 	writeRepositoryFile,
-} from "./helpers/git-fixture.ts";
+} from "../helpers/git-fixture.ts";
 
-const repositoryRoot = resolve(import.meta.dir, "../../..");
+const repositoryRoot = resolve(import.meta.dir, "../../../../..");
 const repositories: string[] = [];
 
 afterEach(async () => {

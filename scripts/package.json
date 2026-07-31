@@ -2,7 +2,7 @@
 	"name": "scripts",
 	"type": "module",
 	"scripts": {
-		"test": "bun test auto-rename-session claude-code-ai statusline command-validator commit-msg-validator secret-scanner index-repo post-write-linter lib/stack-tools lib/coding-standards-schema coding-standards-scanner coding-standards-consolidate new-cc-project-onboarder && bun test ../skills/loop-clean/protocol",
+		"test": "bun test auto-rename-session claude-code-ai statusline command-validator commit-msg-validator secret-scanner index-repo post-write-linter lib/stack-tools lib/coding-standards-schema coding-standards-scanner coding-standards-consolidate new-cc-project-onboarder && bun --cwd ../skills/loop-clean/protocol run test:all",
 		"auto-rename:start": "bun auto-rename-session/src/index.ts",
 		"auto-rename:rename-all": "bun auto-rename-session/src/rename-all.ts",
 		"auto-rename:test": "bun test auto-rename-session",

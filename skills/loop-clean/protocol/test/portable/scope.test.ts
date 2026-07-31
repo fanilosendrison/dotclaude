@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, realpath, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { collectScope } from "../src/scope/collect-scope.ts";
-import { parsePorcelainV2 } from "../src/scope/parse-porcelain-v2.ts";
+import { collectScope } from "../../src/scope/collect-scope.ts";
+import { parsePorcelainV2 } from "../../src/scope/parse-porcelain-v2.ts";
 import {
 	createRepository,
 	removeRepository,
 	runGit,
 	writeRepositoryFile,
-} from "./helpers/git-fixture.ts";
+} from "../helpers/git-fixture.ts";
 
 const repositories: string[] = [];
 

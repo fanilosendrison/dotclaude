@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
-import { captureGitInvariants } from "../src/git/capture-invariants.ts";
-import { verifyGitInvariants } from "../src/git/verify-invariants.ts";
+import { captureGitInvariants } from "../../src/git/capture-invariants.ts";
+import { verifyGitInvariants } from "../../src/git/verify-invariants.ts";
 import {
 	createRepository,
 	removeRepository,
 	runGit,
 	writeRepositoryFile,
-} from "./helpers/git-fixture.ts";
+} from "../helpers/git-fixture.ts";
 
 const repositories: string[] = [];
 

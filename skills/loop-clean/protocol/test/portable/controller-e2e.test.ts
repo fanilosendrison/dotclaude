@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { computeFindingId } from "../src/findings/finding-id.ts";
-import type { RoutingCategory } from "../src/routing/routing-schema.ts";
+import { computeFindingId } from "../../src/findings/finding-id.ts";
+import type { RoutingCategory } from "../../src/routing/routing-schema.ts";
 import {
 	createReadOnlyGitWrapper,
 	createRepository,
@@ -12,9 +12,9 @@ import {
 	runGit,
 	runProcess,
 	writeRepositoryFile,
-} from "./helpers/git-fixture.ts";
+} from "../helpers/git-fixture.ts";
 
-const repositoryRoot = resolve(import.meta.dir, "../../..");
+const repositoryRoot = resolve(import.meta.dir, "../../../../..");
 const controller = join(repositoryRoot, "skills/loop-clean/loop-clean.sh");
 const repositories: string[] = [];
 const externalDirectories: string[] = [];

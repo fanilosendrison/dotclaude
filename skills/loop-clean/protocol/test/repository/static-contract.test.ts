@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
-const repositoryRoot = resolve(import.meta.dir, "../../../..");
+const repositoryRoot = resolve(import.meta.dir, "../../../../..");
 const read = (relativePath: string): string =>
 	readFileSync(resolve(repositoryRoot, relativePath), "utf8");
+
+const SKIP_DIRS = new Set(["node_modules", ".git"]);
+const SKIP_FILES = new Set(["bun.lock"]);
 
 function globFiles(root: string, pattern: string): string[] {
 	const prefix = pattern.replace(/\/\*\*$/, "");
@@ -14,8 +17,11 @@ function globFiles(root: string, pattern: string): string[] {
 	function walk(d: string) {
 		for (const name of readdirSync(d)) {
 			const full = join(d, name);
-			if (statSync(full).isDirectory()) walk(full);
-			else result.push(relative(root, full));
+			if (statSync(full).isDirectory()) {
+				if (!SKIP_DIRS.has(name)) walk(full);
+			} else if (!SKIP_FILES.has(name)) {
+				result.push(relative(root, full));
+			}
 		}
 	}
 	walk(dir);
@@ -26,8 +32,11 @@ function sourceFiles(directory: string): string[] {
 	const files: string[] = [];
 	for (const name of readdirSync(directory)) {
 		const path = join(directory, name);
-		if (statSync(path).isDirectory()) files.push(...sourceFiles(path));
-		else if (path.endsWith(".ts")) files.push(path);
+		if (statSync(path).isDirectory()) {
+			if (!SKIP_DIRS.has(name)) files.push(...sourceFiles(path));
+		} else if (path.endsWith(".ts") && !SKIP_FILES.has(name)) {
+			files.push(path);
+		}
 	}
 	return files;
 }
@@ -221,13 +230,18 @@ describe("production protocol contract", () => {
 		}
 	});
 
+	test("old protocol directory no longer exists", () => {
+		expect(
+			existsSync(resolve(repositoryRoot, "scripts/loop-clean-protocol")),
+		).toBe(false);
+	});
+
 	test("protocol package is self-contained with package.json, bun.lock, and tsconfig.json", () => {
 		const protocolRoot = resolve(repositoryRoot, "skills/loop-clean/protocol");
 		expect(existsSync(resolve(protocolRoot, "package.json"))).toBe(true);
 		expect(existsSync(resolve(protocolRoot, "bun.lock"))).toBe(true);
 		expect(existsSync(resolve(protocolRoot, "tsconfig.json"))).toBe(true);
-		expect(existsSync(resolve(protocolRoot, "node_modules"))).toBe(true);
-		expect(existsSync(resolve(protocolRoot, "node_modules/zod"))).toBe(true);
+		expect(existsSync(resolve(protocolRoot, "bunfig.toml"))).toBe(true);
 	});
 
 	test("loop-clean.sh points to the adjacent protocol CLI", () => {

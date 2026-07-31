@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { runRuntimeGate } from "../src/runtime/run-runtime-gate.ts";
-import { collectScope } from "../src/scope/collect-scope.ts";
+import { runRuntimeGate } from "../../src/runtime/run-runtime-gate.ts";
+import { collectScope } from "../../src/scope/collect-scope.ts";
 import {
 	createRepository,
 	removeRepository,
 	writeRepositoryFile,
-} from "./helpers/git-fixture.ts";
+} from "../helpers/git-fixture.ts";
 
 const repositories: string[] = [];
 

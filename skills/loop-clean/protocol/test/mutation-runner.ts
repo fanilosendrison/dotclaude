@@ -97,7 +97,7 @@ const mutations: readonly MutationDefinition[] = [
 	// NOTE: keep mutationNames (export below) in sync with this array
 	{
 		name: "untracked paths removed from scope",
-		testFile: "scope.test.ts",
+		testFile: "portable/scope.test.ts",
 		apply: async (root) => {
 			await replaceExactly(
 				join(
@@ -111,7 +111,7 @@ const mutations: readonly MutationDefinition[] = [
 	},
 	{
 		name: "iteration history command reintroduced",
-		testFile: "static-contract.test.ts",
+		testFile: "repository/static-contract.test.ts",
 		apply: async (root) => {
 			const path = join(root, "skills/loop-clean/loop-clean.sh");
 			const contents = await readFile(path, "utf8");
@@ -123,7 +123,7 @@ const mutations: readonly MutationDefinition[] = [
 	},
 	{
 		name: "backlog path made relative to cwd",
-		testFile: "static-contract.test.ts",
+		testFile: "repository/static-contract.test.ts",
 		apply: async (root) => {
 			const path = join(root, "skills/fix-or-backlog/SKILL.md");
 			const contents = await readFile(path, "utf8");
@@ -132,7 +132,7 @@ const mutations: readonly MutationDefinition[] = [
 	},
 	{
 		name: "coding-standards source removed from aggregation",
-		testFile: "findings.test.ts",
+		testFile: "portable/findings.test.ts",
 		apply: async (root) => {
 			await replaceExactly(
 				join(
@@ -146,7 +146,7 @@ const mutations: readonly MutationDefinition[] = [
 	},
 	{
 		name: "runtime gate moved after decision",
-		testFile: "static-contract.test.ts",
+		testFile: "repository/static-contract.test.ts",
 		apply: async (root) => {
 			const path = join(root, "agents/loop-clean-orchestrator.md");
 			await replaceExactly(
@@ -158,7 +158,7 @@ const mutations: readonly MutationDefinition[] = [
 	},
 	{
 		name: "scope digest check disabled",
-		testFile: "findings.test.ts",
+		testFile: "portable/findings.test.ts",
 		apply: async (root) => {
 			await replaceExactly(
 				join(
@@ -172,7 +172,7 @@ const mutations: readonly MutationDefinition[] = [
 	},
 	{
 		name: "forgotten routing ID accepted",
-		testFile: "routing.test.ts",
+		testFile: "portable/routing.test.ts",
 		apply: async (root) => {
 			await replaceExactly(
 				join(
@@ -186,7 +186,7 @@ const mutations: readonly MutationDefinition[] = [
 	},
 	{
 		name: "removed package script restored",
-		testFile: "static-contract.test.ts",
+		testFile: "repository/static-contract.test.ts",
 		apply: async (root) => {
 			const path = join(root, "scripts/package.json");
 			const packageJson = JSON.parse(await readFile(path, "utf8"));

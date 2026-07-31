@@ -2,9 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeFindingId } from "../src/findings/finding-id.ts";
-import type { RoutingCategory } from "../src/routing/routing-schema.ts";
-import { validateRouting } from "../src/routing/validate-routing.ts";
+import { computeFindingId } from "../../src/findings/finding-id.ts";
+import type { RoutingCategory } from "../../src/routing/routing-schema.ts";
+import { validateRouting } from "../../src/routing/validate-routing.ts";
 
 const temporaryDirectories: string[] = [];
 const scopeDigest = "c".repeat(64);
