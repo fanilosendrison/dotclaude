@@ -42,6 +42,7 @@ export const SeveritySummarySchema = z.object({
 
 export const ReportSchema = z.object({
 	skill: z.literal("coding-standards"),
+	scope_digest: z.string().regex(/^[0-9a-f]{64}$/),
 	verdict: z.enum(["CLEAN", "ISSUES_FOUND"]),
 	findings: z.array(FindingSchema),
 	summary: SeveritySummarySchema,

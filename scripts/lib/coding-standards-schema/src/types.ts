@@ -1,11 +1,9 @@
 /**
  * Canonical types for the coding-standards skill JSON report.
  *
- * FROZEN SCHEMA: these types describe the JSON consumed by
- * `skills/loop-clean/loop-clean.sh`. Changes must be backwards-compatible
- * with the jq queries in loop-clean.sh (_ids_from_findings,
- * _sigs_from_findings, _count_findings) or those queries must be updated
- * in the same commit.
+ * FROZEN SCHEMA: these types describe the producer JSON validated and merged
+ * by the loop-clean protocol. Coordinate every contract change with the
+ * scanner, semantic producer, consolidator, and canonical collector.
  */
 
 export type Severity =
@@ -79,6 +77,8 @@ export type Verdict = "CLEAN" | "ISSUES_FOUND";
 
 export interface CodingStandardsReport {
 	skill: "coding-standards";
+	/** Digest copied from the single scope manifest used for this report. */
+	scope_digest: string;
 	verdict: Verdict;
 	findings: Finding[];
 	summary: SeveritySummary;

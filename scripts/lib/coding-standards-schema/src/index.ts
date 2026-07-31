@@ -1,22 +1,22 @@
+export { computeFindingId } from "./id-hash.ts";
 export {
 	AXES,
-	SEVERITIES,
+	type Axis,
+	type CodingStandardsReport,
 	computeBlocking,
 	computeSummary,
 	emptySummary,
-	type Axis,
-	type CodingStandardsReport,
 	type Finding,
+	SEVERITIES,
 	type Severity,
 	type SeveritySummary,
 	type Verdict,
 } from "./types.ts";
-export { computeFindingId } from "./id-hash.ts";
 export {
 	FindingSchema,
+	parseReport,
 	ReportSchema,
 	SeveritySummarySchema,
-	parseReport,
 	validateFinding,
 	validateReport,
 	validateSummary,

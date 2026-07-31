@@ -46,7 +46,10 @@ describe("computeFindingId", () => {
 			"typing",
 			"weak type any used in bar return",
 		);
-		const expected = createHash("sha256").update(key).digest("hex").slice(0, 16);
+		const expected = createHash("sha256")
+			.update(key)
+			.digest("hex")
+			.slice(0, 16);
 		expect(id).toBe(expected);
 	});
 
@@ -75,7 +78,13 @@ describe("computeFindingId", () => {
 	});
 
 	it("changes when problem changes (within first 80 chars)", () => {
-		const a = computeFindingId("coding-standards", "f.ts", 1, "typing", "alpha");
+		const a = computeFindingId(
+			"coding-standards",
+			"f.ts",
+			1,
+			"typing",
+			"alpha",
+		);
 		const b = computeFindingId("coding-standards", "f.ts", 1, "typing", "beta");
 		expect(a).not.toBe(b);
 	});
@@ -84,8 +93,20 @@ describe("computeFindingId", () => {
 		// Deliberate property of the formula: only the prefix is hashed, so
 		// trailing reformulations don't invalidate the id.
 		const prefix = "a".repeat(80);
-		const a = computeFindingId("coding-standards", "f.ts", 1, "typing", prefix + "X");
-		const b = computeFindingId("coding-standards", "f.ts", 1, "typing", prefix + "Y");
+		const a = computeFindingId(
+			"coding-standards",
+			"f.ts",
+			1,
+			"typing",
+			`${prefix}X`,
+		);
+		const b = computeFindingId(
+			"coding-standards",
+			"f.ts",
+			1,
+			"typing",
+			`${prefix}Y`,
+		);
 		expect(a).toBe(b);
 	});
 

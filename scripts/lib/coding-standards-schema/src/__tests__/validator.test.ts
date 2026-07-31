@@ -1,10 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	FindingSchema,
-	ReportSchema,
-	parseReport,
-	validateReport,
-} from "../validator.ts";
+import { FindingSchema, parseReport, validateReport } from "../validator.ts";
 
 const validFinding = {
 	id: "0123456789abcdef",
@@ -22,6 +17,7 @@ const validFinding = {
 
 const validReport = {
 	skill: "coding-standards",
+	scope_digest: "a".repeat(64),
 	verdict: "ISSUES_FOUND",
 	findings: [validFinding],
 	summary: {
@@ -93,6 +89,7 @@ describe("ReportSchema", () => {
 	it("accepts a CLEAN empty report", () => {
 		const empty = {
 			skill: "coding-standards",
+			scope_digest: "a".repeat(64),
 			verdict: "CLEAN",
 			findings: [],
 			summary: {
@@ -110,6 +107,11 @@ describe("ReportSchema", () => {
 
 	it("rejects report with wrong skill label", () => {
 		const bad = { ...validReport, skill: "senior-review" };
+		expect(() => validateReport(bad)).toThrow();
+	});
+
+	it("rejects a missing scope digest", () => {
+		const { scope_digest: _omit, ...bad } = validReport;
 		expect(() => validateReport(bad)).toThrow();
 	});
 
