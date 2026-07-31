@@ -190,11 +190,17 @@ cmd_init() {
 
 	# Publish the commit marker last. Its presence guarantees that every
 	# artifact under the run directory is fully initialized.
-	if ! mv "$baseline_tmp" "$baseline_file"; then
-		rm -f "$baseline_tmp"
-		echo "ERROR: failed to publish Git baseline" >&2
-		exit 4
+	# Use ln (not mv) so the marker is exclusive: two concurrent inits
+	# with the same session ID cannot both succeed.
+	if ! ln "$baseline_tmp" "$baseline_file" 2>/dev/null; then
+		# Marker claim lost — another process already won.
+		# Do NOT touch final artifacts; clean only our own temp files.
+		rm -f "$baseline_tmp" "$deferred_tmp"
+		echo "ERROR: loop-clean session already initialized or concurrently claimed: $session_id" >&2
+		exit 2
 	fi
+	# Claim succeeded — our temp baseline is now the marker.
+	rm -f "$baseline_tmp"
 	if ! GIT_OPTIONAL_LOCKS=0 git -C "$repository_root" check-ignore -q -- ".claude/run/loop-clean/$session_id"; then
 		cat >&2 <<'WARNING'
 WARNING: .claude/run/ is not ignored at the resolved Git root.

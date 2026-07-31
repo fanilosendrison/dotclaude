@@ -710,4 +710,27 @@ if (command === "capture-git" && args.output) {
 		const runDir = join(root, ".claude/run/loop-clean", sessionId);
 		expect(existsSync(join(runDir, "git-baseline.json"))).toBe(false);
 	});
+
+	test("concurrent init with same session ID: exactly one claims the marker", async () => {
+		const root = await createLoopRepository();
+		const sessionId = `concurrent-${process.pid}-${sessionCounter++}`;
+		const env = { LOOP_CLEAN_SESSION_ID: sessionId };
+
+		const [a, b] = await Promise.all([
+			runProcess(["bash", controller, "init"], { cwd: root, env }),
+			runProcess(["bash", controller, "init"], { cwd: root, env }),
+		]);
+
+		const successes = [a, b].filter((r) => r.exitCode === 0);
+		const alreadyClaimed = [a, b].filter((r) => r.exitCode === 2);
+
+		expect(successes.length).toBe(1);
+		expect(alreadyClaimed.length).toBe(1);
+		expect(alreadyClaimed[0].stderr).toMatch(/already initialized|concurrently claimed/);
+
+		// The winner must have produced both artifacts.
+		const runDir = join(root, ".claude/run/loop-clean", sessionId);
+		expect(existsSync(join(runDir, "git-baseline.json"))).toBe(true);
+		expect(existsSync(join(runDir, "deferred-findings.json"))).toBe(true);
+	});
 });
