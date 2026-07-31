@@ -59,7 +59,9 @@ describe("buildCrossReferences", () => {
 		const refs = buildCrossReferences(specs, codeFiles, testFiles);
 		const ref = refs.get("SPEC-001");
 
-		expect(ref?.matchStrategy).toBe("convention");
+		expect(ref).toBeDefined();
+		if (!ref) return;
+		expect(ref.matchStrategy).toBe("convention");
 		expect(ref.implementedBy).toContain("src/auth/login.ts");
 		expect(ref.validatedBy).toContain("tests/auth/login.test.ts");
 	});
@@ -101,11 +103,7 @@ describe("buildCrossReferences", () => {
 			},
 		];
 
-		const phaseCodeFiles = [
-			"src/phase-a.ts",
-			"src/phase-b.ts",
-			"src/index.ts",
-		];
+		const phaseCodeFiles = ["src/phase-a.ts", "src/phase-b.ts", "src/index.ts"];
 		const phaseTestFiles = [
 			"tests/phase-a.test.ts",
 			"tests/phase-a-unit.test.ts",

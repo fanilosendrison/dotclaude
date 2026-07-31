@@ -6,6 +6,7 @@ import { buildCrossReferences } from "../src/lib/cross-references";
 import { generateManifest } from "../src/lib/manifest-writer";
 import { scanProject } from "../src/lib/scanner";
 import { validateIndex } from "../src/lib/validation";
+import { runFixtureGit } from "./helpers/git-fixture";
 
 const FIXTURES = join(import.meta.dir, "../fixtures/sample-project");
 let tempDir: string;
@@ -14,7 +15,9 @@ beforeAll(async () => {
 	// Copy fixtures to temp git repo (scanners work on any dir, but e2e needs git)
 	tempDir = await mkdtemp(join(tmpdir(), "index-repo-integration-"));
 	await cp(FIXTURES, tempDir, { recursive: true });
-	await Bun.$`cd ${tempDir} && git init && git add . && git commit -m "init"`.quiet();
+	await runFixtureGit(tempDir, ["init", "--quiet"]);
+	await runFixtureGit(tempDir, ["add", "."]);
+	await runFixtureGit(tempDir, ["commit", "--quiet", "-m", "init"]);
 });
 
 afterAll(async () => {

@@ -6,15 +6,24 @@ import { SPEC_MANIFEST_FILE } from "../src/lib/constants";
 import { checkStaleness } from "../src/lib/staleness";
 import { writeState } from "../src/lib/state";
 import type { IndexState } from "../src/lib/types";
+import { runFixtureGit } from "./helpers/git-fixture";
 
 let tempDir: string;
 
 beforeAll(async () => {
 	// Create temp git repo for testing
 	tempDir = await mkdtemp(join(tmpdir(), "index-repo-test-"));
-	await Bun.$`cd ${tempDir} && git init && git commit --allow-empty -m "init"`.quiet();
+	await runFixtureGit(tempDir, ["init", "--quiet"]);
+	await runFixtureGit(tempDir, [
+		"commit",
+		"--quiet",
+		"--allow-empty",
+		"-m",
+		"init",
+	]);
 	await writeFile(join(tempDir, "test.txt"), "hello");
-	await Bun.$`cd ${tempDir} && git add . && git commit -m "add test"`.quiet();
+	await runFixtureGit(tempDir, ["add", "."]);
+	await runFixtureGit(tempDir, ["commit", "--quiet", "-m", "add test"]);
 });
 
 afterAll(async () => {
@@ -72,15 +81,20 @@ describe("checkStaleness", () => {
 		await writeState(tempDir, state);
 
 		// 2. Write SPEC_MANIFEST.md (simulating scanner output) and commit
-		await writeFile(join(tempDir, SPEC_MANIFEST_FILE), "# Spec Manifest\n> Git ref: abc1234\n");
-		await Bun.$`cd ${tempDir} && git add ${SPEC_MANIFEST_FILE} && git commit -m "add manifest"`.quiet();
+		await writeFile(
+			join(tempDir, SPEC_MANIFEST_FILE),
+			"# Spec Manifest\n> Git ref: abc1234\n",
+		);
+		await runFixtureGit(tempDir, ["add", SPEC_MANIFEST_FILE]);
+		await runFixtureGit(tempDir, ["commit", "--quiet", "-m", "add manifest"]);
 
 		// 3. Tree hash now differs (commit changed it), but only generated file changed
 		const result = await checkStaleness(tempDir);
 		expect(result.status).toBe("FRESH");
 
 		// Clean up: remove manifest from tracking
-		await Bun.$`cd ${tempDir} && git rm -f ${SPEC_MANIFEST_FILE} && git commit -m "cleanup"`.quiet();
+		await runFixtureGit(tempDir, ["rm", "-f", SPEC_MANIFEST_FILE]);
+		await runFixtureGit(tempDir, ["commit", "--quiet", "-m", "cleanup"]);
 	});
 
 	it("should return STALE when real files changed alongside generated files", async () => {
@@ -97,13 +111,20 @@ describe("checkStaleness", () => {
 		// Modify both a real file AND the manifest, then commit
 		await writeFile(join(tempDir, "test.txt"), "changed content");
 		await writeFile(join(tempDir, SPEC_MANIFEST_FILE), "# Spec Manifest\n");
-		await Bun.$`cd ${tempDir} && git add test.txt ${SPEC_MANIFEST_FILE} && git commit -m "real + manifest"`.quiet();
+		await runFixtureGit(tempDir, ["add", "test.txt", SPEC_MANIFEST_FILE]);
+		await runFixtureGit(tempDir, [
+			"commit",
+			"--quiet",
+			"-m",
+			"real + manifest",
+		]);
 
 		const result = await checkStaleness(tempDir);
 		expect(result.status).toBe("STALE");
 
 		// Clean up
-		await Bun.$`cd ${tempDir} && git rm -f ${SPEC_MANIFEST_FILE} && git commit -m "cleanup"`.quiet();
+		await runFixtureGit(tempDir, ["rm", "-f", SPEC_MANIFEST_FILE]);
+		await runFixtureGit(tempDir, ["commit", "--quiet", "-m", "cleanup"]);
 	});
 
 	it("should return STALE when working tree is dirty", async () => {
@@ -124,7 +145,7 @@ describe("checkStaleness", () => {
 		expect(result.status).toBe("STALE");
 
 		// Clean up
-		await Bun.$`cd ${tempDir} && git checkout -- test.txt`.quiet();
+		await runFixtureGit(tempDir, ["checkout", "--", "test.txt"]);
 	});
 
 	it("should return STALE when an untracked file exists", async () => {
