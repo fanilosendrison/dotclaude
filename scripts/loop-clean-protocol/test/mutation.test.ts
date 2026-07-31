@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
-import { runMutationSuite } from "./mutation-runner.ts";
+import { mutationNames, runMutationSuite } from "./mutation-runner.ts";
 
-test("every mandatory loop-clean mutant is killed", async () => {
-	const detected = await runMutationSuite();
-	expect(detected).toHaveLength(8);
-}, 120_000);
+test(
+	"the protocol test suite kills every registered mutation",
+	async () => {
+		const detected = await runMutationSuite();
+		expect(detected).toEqual(mutationNames);
+	},
+	300_000,
+);

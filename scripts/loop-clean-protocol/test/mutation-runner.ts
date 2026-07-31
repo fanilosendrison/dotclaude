@@ -60,6 +60,7 @@ async function copyMutantRepository(): Promise<string> {
 }
 
 const mutations: readonly MutationDefinition[] = [
+	// NOTE: keep mutationNames (export below) in sync with this array
 	{
 		name: "untracked paths removed from scope",
 		testFile: "scope.test.ts",
@@ -160,6 +161,8 @@ const mutations: readonly MutationDefinition[] = [
 		},
 	},
 ];
+
+export const mutationNames = mutations.map((m) => m.name) as readonly string[];
 
 export async function runMutationSuite(): Promise<readonly string[]> {
 	const detected: string[] = [];
