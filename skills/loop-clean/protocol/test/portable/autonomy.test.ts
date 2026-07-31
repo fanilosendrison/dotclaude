@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -35,7 +36,6 @@ describe("autonomous installation", () => {
 		});
 
 		// Verify the copy does not contain scripts/ or node_modules
-		const { existsSync } = await import("node:fs");
 		expect(existsSync(join(isolatedSkill, "protocol", "node_modules"))).toBe(
 			false,
 		);
@@ -56,6 +56,7 @@ describe("autonomous installation", () => {
 		const repoRoot = await createRepository({ prefix: "autonomy-test-" });
 		repositories.push(repoRoot);
 		const initialHead = await runGit(repoRoot, ["rev-parse", "HEAD"]);
+		const initialIndex = await runGit(repoRoot, ["ls-files", "--stage"]);
 
 		// 4. Run init
 		const controller = join(isolatedSkill, "loop-clean.sh");
@@ -85,8 +86,53 @@ describe("autonomous installation", () => {
 		const scopeFile = scopeMatch![1];
 		expect(existsSync(scopeFile)).toBe(true);
 
-		// 8. Verify HEAD is unchanged after protocol operations
+		// 8. Verify HEAD and index are unchanged after protocol operations
 		const finalHead = await runGit(repoRoot, ["rev-parse", "HEAD"]);
 		expect(finalHead).toBe(initialHead);
+		const finalIndex = await runGit(repoRoot, ["ls-files", "--stage"]);
+		expect(finalIndex).toBe(initialIndex);
+	}, 60_000);
+
+	test("LOOP_CLEAN_PROTOCOL_CLI override allows an external CLI without adjacent dependencies", async () => {
+		const isolatedRoot = await mkdtemp(join(tmpdir(), "loop-clean-override-"));
+		isolatedDirs.push(isolatedRoot);
+		const isolatedSkill = join(isolatedRoot, "skills", "loop-clean");
+		await mkdir(join(isolatedSkill, "protocol"), { recursive: true });
+
+		// Copy the skill but intentionally skip installing dependencies
+		await cp(skillRoot, isolatedSkill, {
+			recursive: true,
+			filter: (src) => !src.includes("node_modules"),
+		});
+
+		// Create an alternate CLI that simply records its arguments
+		const alternateCli = join(isolatedRoot, "alternate-cli.ts");
+		await Bun.write(
+			alternateCli,
+			'import { writeFileSync } from "node:fs";\n' +
+				`writeFileSync("${join(isolatedRoot, "alternate-called.txt")}", ` +
+				"process.argv.slice(2).join(' '));\n",
+		);
+
+		// Verify the adjacent node_modules is absent
+		expect(
+			existsSync(join(isolatedSkill, "protocol", "node_modules", "zod")),
+		).toBe(false);
+
+		// Run init with the override — must succeed despite missing adjacent deps
+		const repoRoot = await createRepository({ prefix: "override-test-" });
+		repositories.push(repoRoot);
+		const controller = join(isolatedSkill, "loop-clean.sh");
+		const result = await runProcess(["bash", controller, "init"], {
+			cwd: repoRoot,
+			env: {
+				LOOP_CLEAN_SESSION_ID: "override-test",
+				LOOP_CLEAN_PROTOCOL_CLI: alternateCli,
+			},
+		});
+		expect(result.exitCode).toBe(0);
+
+		// Verify the alternate CLI was actually invoked
+		expect(existsSync(join(isolatedRoot, "alternate-called.txt"))).toBe(true);
 	}, 60_000);
 });
