@@ -7,12 +7,12 @@ import {
 	rm,
 	writeFile,
 } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
 const protocolRoot = resolve(import.meta.dir, "..");
-const skillRoot = resolve(import.meta.dir, "../..");
 
 interface MutationDefinition {
 	readonly name: string;
@@ -35,26 +35,59 @@ async function replaceExactly(
 	await writeFile(path, contents.replace(oldText, newText));
 }
 
-async function copyMutantRepository(): Promise<string> {
-	const mutantRoot = await mkdtemp(join(tmpdir(), "loop-clean-mutant-"));
-	await mkdir(join(mutantRoot, "skills"), { recursive: true });
-	await mkdir(join(mutantRoot, "scripts"), { recursive: true });
+// ── Portable mutations: copy only skills/loop-clean/ ──
 
-	// Copy the entire loop-clean skill (including protocol)
+async function copyPortableMutant(): Promise<string> {
+	const mutantRoot = await mkdtemp(join(tmpdir(), "loop-clean-mutant-portable-"));
+	await mkdir(join(mutantRoot, "skills"), { recursive: true });
 	await cp(
 		join(repositoryRoot, "skills/loop-clean"),
 		join(mutantRoot, "skills/loop-clean"),
-		{ recursive: true },
+		{
+			recursive: true,
+			filter: (src) => !src.includes("node_modules"),
+		},
+	);
+	// Install protocol dependencies in the mutant
+	const protocolDir = join(mutantRoot, "skills/loop-clean/protocol");
+	const installResult = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], {
+		cwd: protocolDir,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	if (installResult.exitCode !== 0) {
+		throw new Error(
+			`portable mutant dependency install failed: ${installResult.stderr.toString()}`,
+		);
+	}
+	return mutantRoot;
+}
+
+// ── Repository mutations: copy what static-contract needs ──
+
+async function copyRepositoryMutant(): Promise<string> {
+	const mutantRoot = await mkdtemp(
+		join(tmpdir(), "loop-clean-mutant-repo-"),
+	);
+	await mkdir(join(mutantRoot, "skills"), { recursive: true });
+	await mkdir(join(mutantRoot, "scripts"), { recursive: true });
+
+	// Copy loop-clean skill (excluding node_modules)
+	await cp(
+		join(repositoryRoot, "skills/loop-clean"),
+		join(mutantRoot, "skills/loop-clean"),
+		{
+			recursive: true,
+			filter: (src) => !src.includes("node_modules"),
+		},
 	);
 
-	// Copy agents, helpers for repository contracts
-	for (const directory of ["agents", "helpers"]) {
-		await cp(join(repositoryRoot, directory), join(mutantRoot, directory), {
-			recursive: true,
-		});
-	}
+	// Copy agents
+	await cp(join(repositoryRoot, "agents"), join(mutantRoot, "agents"), {
+		recursive: true,
+	});
 
-	// Copy other skills needed by repository contracts
+	// Copy only the skills referenced by static-contract
 	for (const skill of [
 		"fix-or-backlog",
 		"coding-standards",
@@ -72,29 +105,44 @@ async function copyMutantRepository(): Promise<string> {
 		}
 	}
 
-	// Copy scripts/package.json (needed by static-contract test)
+	// Copy scripts referenced by static-contract
+	for (const scriptDir of [
+		"coding-standards-scanner",
+		"coding-standards-consolidate",
+	]) {
+		const src = join(repositoryRoot, "scripts", scriptDir);
+		const dst = join(mutantRoot, "scripts", scriptDir);
+		try {
+			await cp(src, dst, { recursive: true });
+		} catch {
+			// May not exist
+		}
+	}
+
 	await cp(
 		join(repositoryRoot, "scripts/package.json"),
 		join(mutantRoot, "scripts/package.json"),
 	);
 
-	// Verify protocol dependencies are installed
-	const protocolNodeModules = join(
-		mutantRoot,
-		"skills/loop-clean/protocol/node_modules",
-	);
-	const { existsSync } = await import("node:fs");
-	if (!existsSync(join(protocolNodeModules, "zod"))) {
+	// Install protocol dependencies in the mutant
+	const protocolDir = join(mutantRoot, "skills/loop-clean/protocol");
+	const installResult = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], {
+		cwd: protocolDir,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	if (installResult.exitCode !== 0) {
 		throw new Error(
-			"protocol dependencies not installed; run: cd skills/loop-clean/protocol && bun install",
+			`repository mutant dependency install failed: ${installResult.stderr.toString()}`,
 		);
 	}
 
 	return mutantRoot;
 }
 
-const mutations: readonly MutationDefinition[] = [
-	// NOTE: keep mutationNames (export below) in sync with this array
+// ── Mutation definitions ──
+
+const portableMutations: readonly MutationDefinition[] = [
 	{
 		name: "untracked paths removed from scope",
 		testFile: "portable/scope.test.ts",
@@ -110,27 +158,6 @@ const mutations: readonly MutationDefinition[] = [
 		},
 	},
 	{
-		name: "iteration history command reintroduced",
-		testFile: "repository/static-contract.test.ts",
-		apply: async (root) => {
-			const path = join(root, "skills/loop-clean/loop-clean.sh");
-			const contents = await readFile(path, "utf8");
-			await writeFile(
-				path,
-				`${contents}\ncmd_commit_iter() { git -C "$LOOP_CLEAN_REPO_ROOT" commit -m mutant; }\n`,
-			);
-		},
-	},
-	{
-		name: "backlog path made relative to cwd",
-		testFile: "repository/static-contract.test.ts",
-		apply: async (root) => {
-			const path = join(root, "skills/fix-or-backlog/SKILL.md");
-			const contents = await readFile(path, "utf8");
-			await writeFile(path, `${contents}\n\`echo mutant >> backlog.md\`\n`);
-		},
-	},
-	{
 		name: "coding-standards source removed from aggregation",
 		testFile: "portable/findings.test.ts",
 		apply: async (root) => {
@@ -141,18 +168,6 @@ const mutations: readonly MutationDefinition[] = [
 				),
 				'\t"coding-standards",\n',
 				"",
-			);
-		},
-	},
-	{
-		name: "runtime gate moved after decision",
-		testFile: "repository/static-contract.test.ts",
-		apply: async (root) => {
-			const path = join(root, "agents/loop-clean-orchestrator.md");
-			await replaceExactly(
-				path,
-				"5. `runtime-gate`\n6. `collect-findings`\n7. `decide`",
-				"5. `collect-findings`\n6. `decide`\n7. `runtime-gate`",
 			);
 		},
 	},
@@ -184,6 +199,42 @@ const mutations: readonly MutationDefinition[] = [
 			);
 		},
 	},
+];
+
+const repositoryMutations: readonly MutationDefinition[] = [
+	{
+		name: "iteration history command reintroduced",
+		testFile: "repository/static-contract.test.ts",
+		apply: async (root) => {
+			const path = join(root, "skills/loop-clean/loop-clean.sh");
+			const contents = await readFile(path, "utf8");
+			await writeFile(
+				path,
+				`${contents}\ncmd_commit_iter() { git -C "$LOOP_CLEAN_REPO_ROOT" commit -m mutant; }\n`,
+			);
+		},
+	},
+	{
+		name: "backlog path made relative to cwd",
+		testFile: "repository/static-contract.test.ts",
+		apply: async (root) => {
+			const path = join(root, "skills/fix-or-backlog/SKILL.md");
+			const contents = await readFile(path, "utf8");
+			await writeFile(path, `${contents}\n\`echo mutant >> backlog.md\`\n`);
+		},
+	},
+	{
+		name: "runtime gate moved after decision",
+		testFile: "repository/static-contract.test.ts",
+		apply: async (root) => {
+			const path = join(root, "agents/loop-clean-orchestrator.md");
+			await replaceExactly(
+				path,
+				"5. `runtime-gate`\n6. `collect-findings`\n7. `decide`",
+				"5. `collect-findings`\n6. `decide`\n7. `runtime-gate`",
+			);
+		},
+	},
 	{
 		name: "removed package script restored",
 		testFile: "repository/static-contract.test.ts",
@@ -196,23 +247,24 @@ const mutations: readonly MutationDefinition[] = [
 	},
 ];
 
-export const mutationNames = mutations.map((m) => m.name) as readonly string[];
+const allMutations = [...portableMutations, ...repositoryMutations];
+export const mutationNames = allMutations.map((m) => m.name) as readonly string[];
 
-export async function runMutationSuite(): Promise<readonly string[]> {
+async function runMutationBatch(
+	mutations: readonly MutationDefinition[],
+	copyFn: () => Promise<string>,
+	testRoot: string,
+): Promise<readonly string[]> {
 	const detected: string[] = [];
 	for (const mutation of mutations) {
-		const mutantRoot = await copyMutantRepository();
+		const mutantRoot = await copyFn();
 		try {
 			await mutation.apply(mutantRoot);
 			const processHandle = Bun.spawn(
 				[
 					"bun",
 					"test",
-					join(
-						mutantRoot,
-						"skills/loop-clean/protocol/test",
-						mutation.testFile,
-					),
+					join(mutantRoot, testRoot, mutation.testFile),
 				],
 				{
 					cwd: join(mutantRoot, "skills/loop-clean/protocol"),
@@ -238,10 +290,24 @@ export async function runMutationSuite(): Promise<readonly string[]> {
 	return detected;
 }
 
+export async function runMutationSuite(): Promise<readonly string[]> {
+	const portableDetected = await runMutationBatch(
+		portableMutations,
+		copyPortableMutant,
+		"skills/loop-clean/protocol/test",
+	);
+	const repositoryDetected = await runMutationBatch(
+		repositoryMutations,
+		copyRepositoryMutant,
+		"skills/loop-clean/protocol/test",
+	);
+	return [...portableDetected, ...repositoryDetected];
+}
+
 if (import.meta.main) {
 	const detected = await runMutationSuite();
 	for (const name of detected) process.stdout.write(`DETECTED ${name}\n`);
 	process.stdout.write(
-		`MUTATION_RESULT ${detected.length}/${mutations.length}\n`,
+		`MUTATION_RESULT ${detected.length}/${allMutations.length}\n`,
 	);
 }
