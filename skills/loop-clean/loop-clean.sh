@@ -193,11 +193,18 @@ cmd_init() {
 	# Use ln (not mv) so the marker is exclusive: two concurrent inits
 	# with the same session ID cannot both succeed.
 	if ! ln "$baseline_tmp" "$baseline_file" 2>/dev/null; then
-		# Marker claim lost — another process already won.
-		# Do NOT touch final artifacts; clean only our own temp files.
+		# ln failed — determine whether we lost a race or hit an I/O fault.
 		rm -f "$baseline_tmp" "$deferred_tmp"
-		echo "ERROR: loop-clean session already initialized or concurrently claimed: $session_id" >&2
-		exit 2
+
+		if [[ -e "$baseline_file" ]]; then
+			# Marker exists: another process already claimed this session.
+			echo "ERROR: loop-clean session already initialized or concurrently claimed: $session_id" >&2
+			exit 2
+		fi
+
+		# Marker absent despite a valid baseline: infrastructure failure.
+		echo "ERROR: failed to publish Git baseline" >&2
+		exit 4
 	fi
 	# Claim succeeded — our temp baseline is now the marker.
 	rm -f "$baseline_tmp"
