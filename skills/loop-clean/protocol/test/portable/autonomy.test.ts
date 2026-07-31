@@ -55,6 +55,7 @@ describe("autonomous installation", () => {
 		// 3. Create a separate Git repository
 		const repoRoot = await createRepository({ prefix: "autonomy-test-" });
 		repositories.push(repoRoot);
+		const initialHead = await runGit(repoRoot, ["rev-parse", "HEAD"]);
 
 		// 4. Run init
 		const controller = join(isolatedSkill, "loop-clean.sh");
@@ -84,8 +85,8 @@ describe("autonomous installation", () => {
 		const scopeFile = scopeMatch![1];
 		expect(existsSync(scopeFile)).toBe(true);
 
-		// 7. Verify HEAD and index are unchanged
-		const head = await runGit(repoRoot, ["rev-parse", "HEAD"]);
-		expect(head).toBeTruthy();
+		// 8. Verify HEAD is unchanged after protocol operations
+		const finalHead = await runGit(repoRoot, ["rev-parse", "HEAD"]);
+		expect(finalHead).toBe(initialHead);
 	}, 60_000);
 });
