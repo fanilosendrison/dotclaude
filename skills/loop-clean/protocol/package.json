@@ -3,11 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test test/scope.test.ts test/git-invariants.test.ts test/findings.test.ts test/routing.test.ts test/runtime-gate.test.ts test/backlog-root.test.ts test/controller-e2e.test.ts test/static-contract.test.ts",
-    "test:repository": "bun test test/static-contract.test.ts",
-    "test:all": "bun test",
+    "test": "bun test test/portable",
+    "test:repository": "bun test test/repository",
+    "test:all": "bun run test && bun run test:repository",
     "mutation": "bun test/mutation-runner.ts",
-    "typecheck": "bun run --no-emit tsc --noEmit"
+    "typecheck": "bun run tsc --noEmit"
   },
   "dependencies": {
     "zod": "^4.3.5"
