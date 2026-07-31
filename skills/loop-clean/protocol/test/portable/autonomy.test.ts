@@ -105,13 +105,29 @@ describe("autonomous installation", () => {
 			filter: (src) => !src.includes("node_modules"),
 		});
 
-		// Create an alternate CLI that simply records its arguments
+		const calledArgsFile = join(isolatedRoot, "alternate-called.txt");
+
+		// Create an alternate CLI that records its arguments
+		// and writes a valid git baseline so init accepts it
 		const alternateCli = join(isolatedRoot, "alternate-cli.ts");
 		await Bun.write(
 			alternateCli,
-			'import { writeFileSync } from "node:fs";\n' +
-				`writeFileSync("${join(isolatedRoot, "alternate-called.txt")}", ` +
-				"process.argv.slice(2).join(' '));\n",
+			`import { writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+const args = process.argv.slice(2);
+writeFileSync("${calledArgsFile}", args.join(" "));
+// Write a valid git baseline at the --output path
+const outputIdx = args.indexOf("--output");
+if (outputIdx >= 0 && outputIdx + 1 < args.length) {
+  const outputPath = args[outputIdx + 1];
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, JSON.stringify({
+    schema_version: 1,
+    head: "UNBORN",
+    index_digest: "${"0".repeat(64)}",
+  }));
+}
+`,
 		);
 
 		// Verify the adjacent node_modules is absent
@@ -132,7 +148,38 @@ describe("autonomous installation", () => {
 		});
 		expect(result.exitCode).toBe(0);
 
-		// Verify the alternate CLI was actually invoked
-		expect(existsSync(join(isolatedRoot, "alternate-called.txt"))).toBe(true);
+		// Verify the alternate CLI was invoked with capture-git
+		const calledArgs = await Bun.file(calledArgsFile).text();
+		expect(calledArgs).toStartWith("capture-git --repo-root");
+		expect(calledArgs).toContain("--output");
+	}, 60_000);
+
+	test("init fails when override CLI returns 0 but produces no valid baseline", async () => {
+		const isolatedRoot = await mkdtemp(join(tmpdir(), "loop-clean-override-bad-"));
+		isolatedDirs.push(isolatedRoot);
+		const isolatedSkill = join(isolatedRoot, "skills", "loop-clean");
+		await mkdir(join(isolatedSkill, "protocol"), { recursive: true });
+
+		await cp(skillRoot, isolatedSkill, {
+			recursive: true,
+			filter: (src) => !src.includes("node_modules"),
+		});
+
+		// CLI that returns 0 but produces no output file
+		const silentCli = join(isolatedRoot, "silent-cli.ts");
+		await Bun.write(silentCli, "// exits 0, writes nothing\n");
+
+		const repoRoot = await createRepository({ prefix: "bad-override-" });
+		repositories.push(repoRoot);
+		const controller = join(isolatedSkill, "loop-clean.sh");
+		const result = await runProcess(["bash", controller, "init"], {
+			cwd: repoRoot,
+			env: {
+				LOOP_CLEAN_SESSION_ID: "bad-override-test",
+				LOOP_CLEAN_PROTOCOL_CLI: silentCli,
+			},
+		});
+		expect(result.exitCode).toBe(4);
+		expect(result.stderr).toContain("valid Git baseline");
 	}, 60_000);
 });
