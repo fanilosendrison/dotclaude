@@ -242,6 +242,17 @@ const portableMutations: readonly MutationDefinition[] = [
 			);
 		},
 	},
+	{
+		name: "exclusive session claim replaced by overwriting move",
+		testFile: "portable/controller-e2e.test.ts",
+		apply: async (root) => {
+			await replaceExactly(
+				join(root, "skills/loop-clean/loop-clean.sh"),
+				'if ! ln "$baseline_tmp" "$baseline_file" 2>/dev/null; then',
+				'if ! mv "$baseline_tmp" "$baseline_file" 2>/dev/null; then',
+			);
+		},
+	},
 ];
 
 const repositoryMutations: readonly MutationDefinition[] = [
