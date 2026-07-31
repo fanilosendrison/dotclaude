@@ -23,8 +23,9 @@ async function writeScopeFile(
 	await writeFile(
 		path,
 		`${JSON.stringify({
-			schema_version: 1,
+			schema_version: 2,
 			repo_root: directory,
+			index_digest: "c".repeat(64),
 			generated_at: "informational",
 			entries,
 			content_digest: "b".repeat(64),
