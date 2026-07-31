@@ -250,6 +250,33 @@ describe("production protocol contract", () => {
 		expect(shellScript).not.toContain("scripts/loop-clean-protocol");
 	});
 
+	test("all protocol CLI calls go through _run_protocol with --no-install", () => {
+		const shellScript = read("skills/loop-clean/loop-clean.sh");
+		// The _run_protocol helper centralizes bun --no-install
+		expect(shellScript).toContain("_run_protocol() {");
+		expect(shellScript).toContain("bun --no-install");
+		// Remove the _run_protocol function body (lines from "_run_protocol() {"
+		// through the closing "}") before checking for bare bun calls
+		const lines = shellScript.split("\n");
+		const filtered: string[] = [];
+		let inHelper = false;
+		for (const line of lines) {
+			if (line.includes("_run_protocol() {")) { inHelper = true; continue; }
+			if (inHelper) {
+				if (line.trim() === "}") { inHelper = false; continue; }
+				continue;
+			}
+			filtered.push(line);
+		}
+		expect(filtered.join("\n")).not.toMatch(/bun.*\$PROTOCOL_CLI/);
+	});
+
+	test("bunfig.toml disables runtime auto-install", () => {
+		const bunfig = read("skills/loop-clean/protocol/bunfig.toml");
+		expect(bunfig).toContain("[install]");
+		expect(bunfig).toContain('auto = "disable"');
+	});
+
 	test("anchors both backlog consumers at the resolved Git root", () => {
 		for (const relativePath of [
 			"skills/backlog-crush/backlog-crush.sh",

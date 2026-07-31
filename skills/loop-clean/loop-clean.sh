@@ -7,7 +7,12 @@ set -euo pipefail
 readonly MAX_ITERATIONS=10
 readonly RETENTION_DAYS=7
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly PROTOCOL_CLI="${LOOP_CLEAN_PROTOCOL_CLI:-$SCRIPT_DIR/protocol/src/cli.ts}"
+readonly DEFAULT_PROTOCOL_CLI="$SCRIPT_DIR/protocol/src/cli.ts"
+readonly PROTOCOL_CLI="${LOOP_CLEAN_PROTOCOL_CLI:-$DEFAULT_PROTOCOL_CLI}"
+
+_run_protocol() {
+	bun --no-install "$PROTOCOL_CLI" "$@"
+}
 
 _sha256() {
 	if command -v sha256sum >/dev/null 2>&1; then
@@ -29,7 +34,8 @@ _require_dependencies() {
 		echo "ERROR: loop-clean protocol CLI not found: $PROTOCOL_CLI" >&2
 		exit 2
 	fi
-	if [[ ! -d "$SCRIPT_DIR/protocol/node_modules/zod" ]]; then
+	if [[ "$PROTOCOL_CLI" == "$DEFAULT_PROTOCOL_CLI" ]] \
+		&& [[ ! -d "$SCRIPT_DIR/protocol/node_modules/zod" ]]; then
 		echo "ERROR: loop-clean protocol dependencies are not installed." >&2
 		echo "Run: cd $SCRIPT_DIR/protocol && bun install --frozen-lockfile" >&2
 		exit 2
@@ -135,7 +141,7 @@ cmd_init() {
 	LOOP_CLEAN_DESIGN_QUEUE_PATH="$repository_root/design-queue.md"
 	mkdir -p "$run_dir"
 	_cleanup_old_runs
-	if ! bun --no-install "$PROTOCOL_CLI" capture-git \
+	if ! _run_protocol capture-git \
 		--repo-root "$repository_root" \
 		--output "$run_dir/git-baseline.json"; then
 		echo "ERROR: failed to capture Git invariants" >&2
@@ -165,7 +171,7 @@ cmd_prepare_iter() {
 	scope_file="$directory/scope.json"
 	mkdir -p "$directory"
 	local protocol_error
-	if ! protocol_error=$(bun --no-install "$PROTOCOL_CLI" scope \
+	if ! protocol_error=$(_run_protocol scope \
 		--repo-root "$LOOP_CLEAN_REPO_ROOT" \
 		--output "$scope_file" 2>&1); then
 		_fail_protocol "scope collection failed: $protocol_error" "$iteration"
@@ -208,7 +214,7 @@ cmd_runtime_gate() {
 		_fail_protocol "runtime-gate requires $scope_file" "$iteration"
 		return $?
 	fi
-	if ! protocol_error=$(bun --no-install "$PROTOCOL_CLI" runtime-gate \
+	if ! protocol_error=$(_run_protocol runtime-gate \
 		--repo-root "$LOOP_CLEAN_REPO_ROOT" \
 		--scope "$scope_file" \
 		--output "$output" 2>&1); then
@@ -224,7 +230,7 @@ cmd_collect_findings() {
 	_require_context
 	local iteration="$1" directory protocol_error
 	directory="$(_iter_dir "$iteration")"
-	if ! protocol_error=$(bun --no-install "$PROTOCOL_CLI" collect \
+	if ! protocol_error=$(_run_protocol collect \
 		--iter-dir "$directory" \
 		--scope "$directory/scope.json" \
 		--deferred "$LOOP_CLEAN_RUN_DIR/deferred-findings.json" \
@@ -330,7 +336,7 @@ cmd_validate_routing() {
 	_require_context
 	local iteration="$1" directory protocol_error
 	directory="$(_iter_dir "$iteration")"
-	if ! protocol_error=$(bun --no-install "$PROTOCOL_CLI" validate-routing \
+	if ! protocol_error=$(_run_protocol validate-routing \
 		--findings "$directory/findings.json" \
 		--routing "$directory/fix-or-backlog.json" \
 		--deferred-out "$LOOP_CLEAN_RUN_DIR/deferred-findings.json" 2>&1); then
@@ -366,7 +372,7 @@ cmd_finalize() {
 		final_exit=4
 	fi
 	local verify_error
-	if ! verify_error=$(bun --no-install "$PROTOCOL_CLI" verify-git \
+	if ! verify_error=$(_run_protocol verify-git \
 		--repo-root "$LOOP_CLEAN_REPO_ROOT" \
 		--baseline "$LOOP_CLEAN_RUN_DIR/git-baseline.json" 2>&1); then
 		final_action="EXIT_PROTOCOL_ERROR"
