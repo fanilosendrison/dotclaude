@@ -1,5 +1,5 @@
 import { sha256 } from "../shared/hash.ts";
-import { executeGitRead } from "./capture-invariants.ts";
+import { executeGitRead } from "./execute-git-read.ts";
 
 /**
  * Computes a SHA-256 digest of the full Git index content.
