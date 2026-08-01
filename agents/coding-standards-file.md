@@ -1,1 +1,0 @@
-/Users/famillesendrison/.agents/agents/coding-standards-file.md
