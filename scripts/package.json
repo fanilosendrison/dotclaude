@@ -2,7 +2,7 @@
 	"name": "scripts",
 	"type": "module",
 	"scripts": {
-		"test": "bun --cwd ../skills/loop-clean/protocol install --frozen-lockfile && bun test auto-rename-session claude-code-ai statusline command-validator commit-msg-validator secret-scanner index-repo post-write-linter lib/stack-tools lib/coding-standards-schema coding-standards-scanner coding-standards-consolidate new-cc-project-onboarder && bun --cwd ../skills/loop-clean/protocol run test:all",
+		"test": "bun test auto-rename-session claude-code-ai statusline command-validator commit-msg-validator secret-scanner index-repo post-write-linter lib/stack-tools new-cc-project-onboarder",
 		"auto-rename:start": "bun auto-rename-session/src/index.ts",
 		"auto-rename:rename-all": "bun auto-rename-session/src/rename-all.ts",
 		"auto-rename:test": "bun test auto-rename-session",
@@ -31,11 +31,6 @@
 		"post-write-linter:cli": "bun post-write-linter/src/cli.ts",
 		"post-write-linter:test": "bun test post-write-linter lib/stack-tools",
 		"stack-tools:test": "bun test lib/stack-tools",
-		"coding-standards-schema:test": "bun test lib/coding-standards-schema",
-		"coding-standards-scanner:cli": "bun coding-standards-scanner/src/cli.ts",
-		"coding-standards-scanner:test": "bun test coding-standards-scanner",
-		"coding-standards-consolidate:cli": "bun coding-standards-consolidate/src/cli.ts",
-		"coding-standards-consolidate:test": "bun test coding-standards-consolidate",
 		
 		"onboarder:cli": "bun new-cc-project-onboarder/src/required-tools-checker/required-tools-checker.ts",
 		"onboarder:start": "bun new-cc-project-onboarder/src/turnlock-orchestrator/main.ts",
