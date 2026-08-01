@@ -8,7 +8,10 @@ Personal Claude Code vendor repo — source for `~/.claude/{skills,agents,script
 [dotagents](https://github.com/fanilosendrison/dotagents), the canonical `.agents`
 source. The corresponding entries under `~/.claude/skills/`, `~/.claude/agents/`,
 and `~/.claude/scripts/` are now a **locally-generated symlink facade** pointing
-to `~/.agents/`. There are no real copies remaining in this repository.
+to `~/.agents/`.
+
+**This repository does not version the facade.** The canonical sources live in
+dotagents. The facade is generated locally in `~/.claude/` by the installer.
 
 ### Affected resources (canonical source → dotagents)
 
@@ -20,9 +23,26 @@ to `~/.agents/`. There are no real copies remaining in this repository.
 
 ### Facade installation
 
-The facade is created by a local, idempotent installer that replaces each legacy
-real directory/file with a symlink to `~/.agents/`. Re-run the installer after
-a fresh clone to recreate the facade.
+After a fresh clone, the facade must be generated locally. The installer lives in
+dotagents at `~/.agents/scripts/claude-facade/`.
+
+```bash
+# Create the facade (idempotent — safe to re-run)
+bun ~/.agents/scripts/claude-facade/src/cli.ts install
+
+# Verify the facade is correct (read-only)
+bun ~/.agents/scripts/claude-facade/src/cli.ts check
+
+# Repair broken or misdirected symlinks
+bun ~/.agents/scripts/claude-facade/src/cli.ts install --repair
+```
+
+**Safety contract:**
+- The installer never overwrites real files or directories — collisions cause an
+error.
+- Wrong or broken symlinks are reported but not silently replaced (use `--repair`).
+- The installer is idempotent: running it multiple times is safe.
+- No existing data is ever deleted automatically.
 
 ## Purpose
 
@@ -33,9 +53,9 @@ a fresh clone to recreate the facade.
 
 ```
 dotclaude/
-├── skills/      # Claude Code skills (~/.claude/skills/) — loop-clean resources are symlinks to ~/.agents/
-├── agents/      # Sub-agents (~/.claude/agents/) — loop-clean agents are symlinks to ~/.agents/
-├── scripts/     # Bash/TS helpers (~/.claude/scripts/) — migrated scripts are symlinks to ~/.agents/
+├── skills/      # Claude Code skills (~/.claude/skills/) — loop-clean resources are facade symlinks to ~/.agents/
+├── agents/      # Sub-agents (~/.claude/agents/) — loop-clean agents are facade symlinks to ~/.agents/
+├── scripts/     # Bash/TS helpers (~/.claude/scripts/) — migrated scripts are facade symlinks to ~/.agents/
 ├── helpers/     # Shared prompt snippets
 └── README.md
 ```
