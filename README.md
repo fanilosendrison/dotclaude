@@ -1,6 +1,28 @@
 # dotclaude
 
-Personal Claude Code vendor repo — mirror of `~/.claude/{skills,agents,scripts,helpers}/`.
+Personal Claude Code vendor repo — source for `~/.claude/{skills,agents,scripts,helpers}/`.
+
+## Loop-clean migration to dotagents
+
+**Effective 2025-08-01**, `loop-clean` and its dependencies have been migrated to
+[dotagents](https://github.com/fanilosendrison/dotagents), the canonical `.agents`
+source. The corresponding entries under `~/.claude/skills/`, `~/.claude/agents/`,
+and `~/.claude/scripts/` are now a **locally-generated symlink facade** pointing
+to `~/.agents/`. There are no real copies remaining in this repository.
+
+### Affected resources (canonical source → dotagents)
+
+| Category | Entries |
+|----------|---------|
+| Skills | `loop-clean`, `coding-standards`, `senior-review`, `dedup-codebase`, `fix-or-backlog`, `backlog-crush`, `backlog-deep-crush`, `lib/backlog-common.sh` |
+| Agents | `loop-clean-orchestrator`, `backlog-crush-orchestrator`, `backlog-deep-crush-orchestrator`, `backlog-fix`, `coding-standards-file`, `dedup-inter`, `dedup-intra`, `fix-file`, `senior-review-file` |
+| Scripts | `coding-standards-scanner`, `coding-standards-consolidate`, `lib/coding-standards-schema`, `lib/stack-tools` |
+
+### Facade installation
+
+The facade is created by a local, idempotent installer that replaces each legacy
+real directory/file with a symlink to `~/.agents/`. Re-run the installer after
+a fresh clone to recreate the facade.
 
 ## Purpose
 
@@ -11,9 +33,9 @@ Personal Claude Code vendor repo — mirror of `~/.claude/{skills,agents,scripts
 
 ```
 dotclaude/
-├── skills/      # Claude Code skills (~/.claude/skills/)
-├── agents/      # Sub-agents (~/.claude/agents/)
-├── scripts/     # Bash/TS helpers (~/.claude/scripts/)
+├── skills/      # Claude Code skills (~/.claude/skills/) — loop-clean resources are symlinks to ~/.agents/
+├── agents/      # Sub-agents (~/.claude/agents/) — loop-clean agents are symlinks to ~/.agents/
+├── scripts/     # Bash/TS helpers (~/.claude/scripts/) — migrated scripts are symlinks to ~/.agents/
 ├── helpers/     # Shared prompt snippets
 └── README.md
 ```
